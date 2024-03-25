@@ -4,8 +4,8 @@
 model=bert-large
 #pipeline='gpipe'
 #pipeline='1f1b'
-#pipeline='chimera'
-pipeline='interleave'
+pipeline='chimera'
+#pipeline='interleave'
 stages=8
 ngpus=8
 microbs=32
@@ -39,10 +39,11 @@ do
 done
 fig_path=${base_dir}/${name}.pdf
 echo creating ${fig_path} ...
+echo "${name}_node*_timeline.pickle"
 python scripts/plot_cuda_timeline.py \
     $pickle_paths \
     --fig_path $fig_path \
     --title $name \
     --num_replicas 1 \
-
+    >> plot_cuda_time.txt
 #imgcat $fig_path
