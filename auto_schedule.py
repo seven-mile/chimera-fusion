@@ -87,23 +87,28 @@ def assign_workloads_to_bubbles(workloads, schedule, fwd_count=0, bwd_count=0, m
         elif last_workload.label == BACKWARD:
             bwd_count += 1
         next_workload = schedule.pop(0)
+        # 上一步结束到下一步开始之间的时间差就是气泡
         bubble_start = last_workload.end
         bubble_end = next_workload.start
         while True:
+            # 已送入的流水线,用于循环之后判断新的时间表元素个数是否不再变化
             num_workloads_before = len(new_schedule)
             for workload in workloads:
                 if isinstance(workload, WorkloadQueue):
                     while bubble_start + workload.avg_duration * (1 + margin_ratio) < bubble_end:
+                        # fwd_count 和next_workload_id一起加一，如果fwd_count<workload.next_workload_id + 1则前向已经结束,后向同理。
                         if COV_KRON_A in workload.label and (fwd_count < workload.next_workload_id + 1):
                             break
                         elif COV_KRON_B in workload.label and (bwd_count < workload.next_workload_id + 1):
                             break
+                        # 取出第一个workload
                         sub_workload = workload.pop()
                         sub_workload.end = bubble_start + sub_workload.duration
                         sub_workload.start = bubble_start
                         new_schedule.append(sub_workload)
                         bubble_start += sub_workload.duration
                         if len(workload) == 0:
+                            # 当前workloadQueue中没有workload
                             workloads.remove(workload)
                             break
                 elif bubble_start + workload.duration * (1 + margin_ratio) < bubble_end:
@@ -131,8 +136,20 @@ def assign_workloads_to_bubbles(workloads, schedule, fwd_count=0, bwd_count=0, m
 def main():
     # get start and end time by the timeline of the node 0
     base_time = timelines[0]['call_forward'][0][0]
+    """
+    # timeline结构如下
+    {
+        "call_forward":[
+            [1,2],      # 前为开始时间,后为结束时间
+            [2,3],
+            [3,4]
+        ],
+    }
+
+    """
     if 'call_forward' + TAG_UP_PIPE in timelines[0]:
-        base_time = min(base_time, timelines[0]['call_forward' + TAG_UP_PIPE][0][0])
+        base_time = min(
+            base_time, timelines[0]['call_forward' + TAG_UP_PIPE][0][0])
 
     def time_shift(t):
         if t is None:
@@ -142,7 +159,8 @@ def main():
     start_time = 0
     end_time = timelines[0]['call_backward'][-1][-1]
     if 'call_backward' + TAG_UP_PIPE in timelines[0]:
-        end_time = max(end_time, timelines[0]['call_backward' + TAG_UP_PIPE][-1][-1])
+        end_time = max(
+            end_time, timelines[0]['call_backward' + TAG_UP_PIPE][-1][-1])
     end_time = time_shift(end_time)
     pipeline_time = end_time - start_time
 
@@ -160,6 +178,7 @@ def main():
         pipeline_workloads.sort(key=lambda x: x.start)
 
         num_micro_batches = sum(map(lambda x: x.label == FORWARD, pipeline_workloads))
+        # 计算出前向的micro-batch数量，同时判断是否与后向数量相同
         assert num_micro_batches == sum(map(lambda x: x.label == BACKWARD, pipeline_workloads))
 
         ngd_workloads = []
@@ -168,11 +187,14 @@ def main():
                 if event not in key:
                     continue
                 if event in cov_events:
+                    # 将K-FAC分布到气泡中。
                     for s, e in timeline[key]:
+                        # 将该开始结束时间划分为num_micro_batches个workload
                         ngd_workloads.append(WorkloadQueue(key, time_shift(s), time_shift(e), num_micro_batches, priority=i))
                 else:
                     for s, e in timeline[key]:
                         ngd_workloads.append(Workload(key, time_shift(s), time_shift(e), priority=i))
+        # 现根据开始时间排序，后根据优先级排序
         ngd_workloads.sort(key=lambda x: x.start)
         ngd_workloads.sort(key=lambda x: x.priority)
 
@@ -278,6 +300,9 @@ def human_sort(l):
 
 
 def extract_last_iteration(timeline):
+    """
+        将一条流水线切分为 n_iterations 个 micro-batch
+    """
     n_iterations = len(timeline['start_end'])
     if n_iterations == 1:
         return

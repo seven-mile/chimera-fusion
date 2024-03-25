@@ -11,18 +11,16 @@ from torch.nn.utils import parameters_to_vector, vector_to_parameters
 import torch.distributed as dist
 from torch.cuda import nvtx
 
-import asdfghjkl as asdl
 
 import threading
 import threadsafe_queue
 from auto_schedule import PIPELINE_END, FORWARD, BACKWARD, \
     COV_KRON_A, COV_KRON_B, INV_KRON_A, INV_KRON_B, SYNC_KRON_A, SYNC_KRON_B, \
     TURN_OFF_SAVE, TURN_ON_SAVE, TAG_UP_PIPE
-
+from chimera_pipeline_rank import AutoGeneratePipelineRank, MyPipeLine
 
 PIPELINE_1F1B = '1f1b'
 PIPELINE_GPIPE = 'gpipe'
-PIPELINE_GPIPE_NGD = 'gpipe_ngd'
 PIPELINE_CHIMERA = 'chimera'
 PIPELINE_INTER = 'interleave'
 
@@ -61,12 +59,13 @@ class PipelineStage:
                  recompute: bool = False,
                  is_up_pipe: bool = False,
                  chunks: int = None,
-                 up_pipe_stage=None,
+                 pipe_stage=None,
                  interleaved_stages: List = [],
                  nvtx_tag=''):
         assert dist.is_initialized(), 'torch.distributed needs to be initialized.'
         assert num_stages > 1, 'num_stages has to be > 1.'
-        assert stage_id in range(num_stages), 'stage_id has be in range(num_stage).'
+        assert stage_id in range(
+            num_stages), 'stage_id has be in range(num_stage).'
         self.stage_id = stage_id
         self.num_stages = num_stages
         self.stage_module = stage_module
@@ -82,8 +81,8 @@ class PipelineStage:
         self.recompute = recompute
         self.is_up_pipe = is_up_pipe
         if not self.is_up_pipe and self.pipeline_method == PIPELINE_CHIMERA:
-            assert up_pipe_stage is not None, 'Up pipeline should be created.'
-        self.up_pipe_stage = up_pipe_stage
+            assert pipe_stage is not None, 'Up pipeline should be created.'
+        self.pipe_stage = pipe_stage
         self.interleaved_stages = interleaved_stages
         self.chunks = chunks
         self.tag = 2 if is_up_pipe else 1
@@ -165,6 +164,7 @@ class PipelineStage:
             send_tensor = queue.remove()
             if dist.get_backend() != dist.Backend.NCCL:
                 send_tensor = send_tensor.cpu()
+            
             dist.send(tensor=send_tensor, dst=dst_rank, tag=tag)
 
     def start_comm_threads(self, num_iterations):
@@ -347,7 +347,6 @@ class PipelineStage:
                       num_micro_batches,
                       pipeline_method=None,
                       data_iterator_for_up_pipe: Iterator = None,
-                      ngd: asdl.NaturalGradient = None,
                       iteration: int = None,
                       no_sync_grad=False):
         if pipeline_method is None:
@@ -360,11 +359,6 @@ class PipelineStage:
             _call_pipeline = self._call_interleaved_1f1b_pipeline
         elif pipeline_method == PIPELINE_GPIPE:
             _call_pipeline = self._call_gpipe_pipeline
-        elif pipeline_method == PIPELINE_GPIPE_NGD:
-            _call_pipeline = self._call_gpipe_pipeline_ngd
-            kwargs['ngd'] = ngd
-            kwargs['iteration'] = iteration
-            kwargs.pop('no_sync_grad')
         elif pipeline_method == PIPELINE_CHIMERA:
             _call_pipeline = self._call_chimera_pipeline
             kwargs['data_iterator_for_up_pipe'] = data_iterator_for_up_pipe
@@ -374,126 +368,6 @@ class PipelineStage:
         self.total_loss = 0.
         self.assert_intermediate_queues_are_empty()
         _call_pipeline(**kwargs)
-        self.assert_intermediate_queues_are_empty()
-        return self.total_loss
-
-    @nvtx.range('call_pipeline')
-    def call_scheduled_pipeline(self,
-                                schedule: List[str],
-                                data_iterator,
-                                ngd: asdl.NaturalGradient,
-                                cxt: asdl.OperationContext,
-                                data_iterator_up_pipe=None,
-                                ngd_up_pipe: asdl.NaturalGradient = None,
-                                cxt_up_pipe: asdl.OperationContext = None,
-                                up_side_down=False):
-        self.total_loss = 0.
-        self.assert_intermediate_queues_are_empty()
-
-        dual_pipelines = data_iterator_up_pipe is not None or ngd_up_pipe is not None
-        if dual_pipelines:
-            assert data_iterator_up_pipe is not None
-            assert ngd_up_pipe is not None
-
-        if up_side_down:
-            stage_down_pipe = self.up_pipe_stage
-            stage_up_pipe = self
-            data_iterator_down_pipe = data_iterator_up_pipe
-            data_iterator_up_pipe = data_iterator
-            ngd_down_pipe = ngd_up_pipe
-            ngd_up_pipe = ngd
-            cxt_down_pipe = cxt_up_pipe
-            cxt_up_pipe = cxt
-        else:
-            stage_down_pipe = self
-            stage_up_pipe = self.up_pipe_stage
-            data_iterator_down_pipe = data_iterator
-            ngd_down_pipe = ngd
-            cxt_down_pipe = cxt
-
-        def get_ngd_and_module_name(_label, _event):
-            _module_name = _label.replace(f'{_event}:', '')
-            if TAG_UP_PIPE in _label:
-                assert dual_pipelines
-                return ngd_up_pipe, _module_name.replace(TAG_UP_PIPE, '')
-            return ngd_down_pipe, _module_name
-
-        for label in schedule:
-            if label == FORWARD:
-                stage_down_pipe.call_forward(next(data_iterator_down_pipe))
-            elif label == FORWARD + TAG_UP_PIPE:
-                stage_up_pipe.call_forward(next(data_iterator_up_pipe))
-            elif label == BACKWARD:
-                stage_down_pipe.call_backward()
-            elif label == BACKWARD + TAG_UP_PIPE:
-                stage_up_pipe.call_backward()
-            elif COV_KRON_A in label or COV_KRON_B in label:
-                if COV_KRON_A in label:
-                    A_or_B = 'A'
-                    _ngd, module_name = get_ngd_and_module_name(label, COV_KRON_A)
-                else:
-                    A_or_B = 'B'
-                    _ngd, module_name = get_ngd_and_module_name(label, COV_KRON_B)
-                _cxt = cxt_up_pipe if TAG_UP_PIPE in label else cxt_down_pipe
-                _ngd.accumulate_curvature(cxt=_cxt, module_name=module_name, kron=[A_or_B], num_batches=1)
-            elif SYNC_KRON_A in label or SYNC_KRON_B in label:
-                if SYNC_KRON_A in label:
-                    A_or_B = 'A'
-                    _module_name = label.replace(f'{SYNC_KRON_A}:', '')
-                else:
-                    A_or_B = 'B'
-                    _module_name = label.replace(f'{SYNC_KRON_B}:', '')
-                if dual_pipelines:
-                    ngd_down_pipe.sync_curvature(module_name=_module_name, kron=[A_or_B], async_op=True)
-                    ngd_up_pipe.sync_curvature(module_name=_module_name, kron=[A_or_B], async_op=True)
-                    ngd_down_pipe.wait_all_curvature_sync()
-                    ngd_up_pipe.wait_all_curvature_sync()
-                else:
-                    ngd_down_pipe.sync_curvature(module_name=_module_name, kron=[A_or_B], enabled=self.is_distributed)
-#            elif label in [SYNC_KRON_A, SYNC_KRON_B]:
-#                A_or_B = 'A' if label == SYNC_KRON_A else 'B'
-#                if dual_pipelines:
-#                    ngd_down_pipe.sync_curvature(kron=[A_or_B], async_op=True)
-#                    ngd_up_pipe.sync_curvature(kron=[A_or_B], async_op=True)
-#                    ngd_down_pipe.wait_all_curvature_sync()
-#                    ngd_up_pipe.wait_all_curvature_sync()
-#                else:
-#                    ngd_down_pipe.sync_curvature(kron=[A_or_B], enabled=self.is_distributed)
-            elif INV_KRON_A in label or INV_KRON_B in label:
-                if INV_KRON_A in label:
-                    A_or_B = 'A'
-                    _ngd, module_name = get_ngd_and_module_name(label, INV_KRON_A)
-                else:
-                    A_or_B = 'B'
-                    _ngd, module_name = get_ngd_and_module_name(label, INV_KRON_B)
-                _ngd.update_inv(module_name=module_name, kron=[A_or_B], zero_curvature=True, partition_aware=True)
-            elif label == PIPELINE_END:
-                if dual_pipelines:
-                    ngd_down_pipe.sync_grad_pre_precondition(self.is_distributed, async_op=True)
-                    ngd_up_pipe.sync_grad_pre_precondition(self.is_distributed, async_op=True)
-                    ngd_down_pipe.wait_all_grad_sync()
-                    ngd_up_pipe.wait_all_grad_sync()
-
-                    ngd_down_pipe.precondition()
-                    ngd_up_pipe.precondition()
-
-                    ngd_down_pipe.sync_grad_post_precondition(self.is_distributed, async_op=True)
-                    ngd_up_pipe.sync_grad_post_precondition(self.is_distributed, async_op=True)
-                    ngd_down_pipe.wait_all_grad_sync()
-                    ngd_up_pipe.wait_all_grad_sync()
-                else:
-                    ngd_down_pipe.sync_grad_pre_precondition(self.is_distributed)
-                    ngd_down_pipe.precondition()
-                    ngd_down_pipe.sync_grad_post_precondition(self.is_distributed)
-            elif label == TURN_OFF_SAVE:
-                cxt_down_pipe.turn_off_save_inputs_outgrads()
-                if dual_pipelines:
-                    cxt_up_pipe.turn_off_save_inputs_outgrads()
-            elif label == TURN_ON_SAVE:
-                cxt_down_pipe.turn_on_save_inputs_outgrads()
-                if dual_pipelines:
-                    cxt_up_pipe.turn_on_save_inputs_outgrads()
-
         self.assert_intermediate_queues_are_empty()
         return self.total_loss
 
@@ -512,7 +386,7 @@ class PipelineStage:
         for _ in range(num_warmup_steps):
             self.call_backward()
         self.call_backward()
-        
+
         if self.is_distributed and not no_sync_grad:
             self.sync_grad()
 
@@ -535,14 +409,14 @@ class PipelineStage:
             if forward_chunk_id == 0:
                 self.call_forward(next(data_iterator))
             else:
-                self.interleaved_stages[forward_chunk_id-1].call_forward(next(data_iterator))
+                self.interleaved_stages[forward_chunk_id - 1].call_forward(next(data_iterator))
             forward_counter += 1
         for _ in range(num_micro_batches - num_warmup_steps):
             forward_chunk_id = (forward_counter // pipeline_parallel_size) % self.chunks
             if forward_chunk_id == 0:
                 self.call_forward(next(data_iterator))
             else:
-                self.interleaved_stages[forward_chunk_id-1].call_forward(next(data_iterator))
+                self.interleaved_stages[forward_chunk_id - 1].call_forward(next(data_iterator))
             forward_counter += 1
 
             backward_chunk_id = self.chunks - (backward_counter // pipeline_parallel_size) % self.chunks - 1
@@ -578,49 +452,6 @@ class PipelineStage:
         if self.is_distributed and not no_sync_grad:
             self.sync_grad()
 
-    def _call_gpipe_pipeline_ngd(self,
-                                 data_iterator: Iterator,
-                                 num_micro_batches,
-                                 ngd: asdl.NaturalGradient,
-                                 iteration):
-        """
-        GPipe with K-FAC
-        """
-        update_prev_B_inv = self.stage_id in [0, 1] and iteration > 0
-
-        with asdl.save_inputs_outgrads(self.stage_module, ignore_modules=ngd.ignore_modules) as cxt:
-            for _ in range(num_micro_batches):
-                self.call_forward(next(data_iterator))
-
-            if not self.is_last_stage:
-                ngd.accumulate_curvature(cxt=cxt)
-                ngd.sync_curvature(kron=['A'], enabled=self.is_distributed)
-                ngd.update_inv(kron=['A'], zero_curvature=True)
-                if update_prev_B_inv:
-                    ngd.sync_curvature(kron=['A'], enabled=self.is_distributed)
-                    ngd.update_inv(kron=['B'], zero_curvature=True)
-
-            for i in range(num_micro_batches):
-                self.call_backward()
-                if not self.is_last_stage:
-                    if (self.is_first_stage and i < num_micro_batches - 1) or (not self.is_first_stage):
-                        ngd.accumulate_curvature(cxt=cxt)
-            if self.is_last_stage:
-                if iteration % 2 == 0:
-                    ngd.accumulate_curvature(cxt=cxt)
-
-        if self.is_last_stage:
-            if iteration == 0 or iteration % 2 == 1:
-                ngd.sync_curvature(kron=['A', 'B'], enabled=self.is_distributed)
-                ngd.update_inv(kron=['A', 'B'], zero_curvature=True)
-        elif not update_prev_B_inv:
-            ngd.sync_curvature(kron=['B'], enabled=self.is_distributed)
-            ngd.update_inv(kron=['B'], zero_curvature=True)
-
-        ngd.sync_grad_pre_precondition(self.is_distributed)
-        ngd.precondition()
-        ngd.sync_grad_post_precondition(self.is_distributed)
-
     def _call_chimera_pipeline(self,
                                data_iterator: Iterator,
                                data_iterator_for_up_pipe: Iterator,
@@ -640,70 +471,64 @@ class PipelineStage:
             schedule_number_a = -schedule_number_a + 1
         schedule_number_b = half_stages - schedule_number_a
 
-        def call(func_name, down_or_up, up_side_down=False, with_data=False):
-            if up_side_down:
-                down_or_up = 'up' if down_or_up == 'down' else 'down'
+        def call(func_name, index, down_or_up, up_side_down=False, with_data=False):
             args = []
             if with_data:
-                data = next(data_iterator) if down_or_up == 'down' else next(data_iterator_for_up_pipe)
+                data = next(data_iterator) if down_or_up == 'down' else next(
+                    data_iterator_for_up_pipe)
                 args.append(data)
-            if down_or_up == 'down':
-                getattr(self, func_name)(*args)
-            else:
-                getattr(self.up_pipe_stage, func_name)(*args)
+            # if down_or_up == 'down':
+            #     getattr(self, func_name)(*args)
+            # else:
+            #     getattr(self.pipe_stage, func_name)(*args)
+            getattr(self.pipe_stage[index], func_name)(*args)
 
-        def forward(down_or_up):
-            call('call_forward', down_or_up, up_side_down=not first_half, with_data=True)
+        def forward(index, down_or_up):
+            call('call_forward', index, down_or_up,
+                 up_side_down=not first_half, with_data=True)
 
-        def backward(down_or_up):
-            call('call_backward', down_or_up, up_side_down=not first_half)
-
-        def wait_all(down_or_up):
+        def backward(index, down_or_up):
+            call('call_backward', index, down_or_up,
+                 up_side_down=not first_half)
+        def wait_all():
             if not no_sync_grad:
-                call('wait_all', down_or_up, up_side_down=not first_half)
+                 
+                for s in self.pipe_stage:
+                    s.wait_all()
 
-        def sync_grad(down_or_up):
+        def sync_grad(index, down_or_up):
             if not no_sync_grad:
-                call('nb_sync_grad', down_or_up)
+                call('nb_sync_grad', index, down_or_up)
+        pipeline = AutoGeneratePipelineRank(
+            self.num_stages, 2, num_micro_batches*2)
+        pipeline.generate_pipeline()
+        schedule_pipeline = pipeline.get_schedule(True)
+        pipeline_schedule = []
+        for sub_schedule in schedule_pipeline:
+            pipeline_schedule.append(sub_schedule)
+        for sub_schedule in pipeline_schedule:
+            if sub_schedule[self.stage_id] != '':
+                index, up_down, forward_backward = sub_schedule[self.stage_id].split(
+                    "@")
+                index = int(index)  
+                if forward_backward == 'f':
+                    forward(index, up_down)
+                elif forward_backward == 'b':
+                    backward(index, up_down)
+                elif forward_backward == 's':
+                    sync_grad(index, up_down)
+        #f r sub_schedule in schedule_pipeline:
+            #print(sub_schedule)
+            #if sub_schedule[self.stage_id] != '':
 
-        for acc_step in range(acc_steps):
-            for _ in range(schedule_number_a):
-                if acc_step > 0:
-                    backward('down')
-                forward('down')
-
-            for _ in range(schedule_number_b):
-                forward('up')
-                forward('down')
-
-            for _ in range(schedule_number_a):
-                forward('up')
-                backward('up')
-
-            for _ in range(schedule_number_b):
-                backward('down')
-                backward('up')
-
-            # early invoke sync_grad
-            if acc_step == acc_steps - 1:
-                if self.stage_id > half_stages:
-                    sync_grad('down')
-                elif self.up_pipe_stage.stage_id > half_stages:
-                    sync_grad('up')
-
-        for _ in range(schedule_number_a):
-            backward('down')
-
-        if self.stage_id == half_stages:
-            sync_grad('down')
-            sync_grad('up')
-        elif self.up_pipe_stage.stage_id == half_stages:
-            sync_grad('up')
-            sync_grad('down')
-        elif self.stage_id > half_stages:
-            sync_grad('up')
-        elif self.up_pipe_stage.stage_id > half_stages:
-            sync_grad('down')
-
-        wait_all('up')
-        wait_all('down')
+            #    index, up_down, forward_backward = sub_schedule[self.stage_id].split(
+            #        "@")
+            #    index = int(index)
+            #    if forward_backward == 'f':
+            #        forward(index, up_down)
+            #    elif forward_backward == 'b':
+            #        backward(index, up_down)
+            #    elif forward_backward == 's':
+            #        sync_grad(index, up_down)
+            #    print(self.rank, sub_schedule[self.stage_id])   
+        wait_all()

@@ -4,7 +4,6 @@ import random
 import math
 from contextlib import nullcontext
 
-import transformers
 import yaml
 
 import numpy as np
@@ -25,8 +24,6 @@ from bert_optim import PolyWarmUpScheduler
 from bert_model import BertForPreTrainingEx
 
 from apex.optimizers import FusedLAMB
-
-import asdfghjkl as asdl
 
 try:
     import wandb
@@ -63,11 +60,10 @@ parser.add_argument('--gradient_accumulation_steps', type=int, default=1,
 parser.add_argument("--learning_rate", default=3e-5, type=float,
                     help="The initial learning rate for Adam.")
 parser.add_argument("--momentum", default=0.9, type=float)
-parser.add_argument("--ngd_learning_rate", default=3e-5, type=float,
-                    help="The initial learning rate for NGD.")
-parser.add_argument("--ngd_momentum", default=0.9, type=float)
+
+
 parser.add_argument("--max_grad_norm", type=float, default=1.)
-parser.add_argument("--ngd_max_grad_norm", type=float, default=100.)
+
 parser.add_argument("--weight_decay", type=float, default=0.01)
 parser.add_argument("--beta1", type=float, default=0.9)
 parser.add_argument("--beta2", type=float, default=0.999)
@@ -79,8 +75,6 @@ parser.add_argument('--weight_scaling', action='store_true')
 parser.add_argument('--lars', action='store_true')
 parser.add_argument('--adam', action='store_true')
 parser.add_argument('--sgd', action='store_true')
-parser.add_argument('--ngd_with_adam', action='store_true')
-parser.add_argument('--ngd_with_lamb', action='store_true')
 # Others
 parser.add_argument('--checkpoint_dir', default=None, type=str,
                     help='path to directory to save checkpoints')
@@ -91,8 +85,6 @@ parser.add_argument('--seed', type=int, default=1,
 parser.add_argument('--collective_backend', default=dist.Backend.NCCL, type=str)
 parser.add_argument('--num_workers', default=4, type=int)
 parser.add_argument('--profile', action='store_true')
-parser.add_argument('--ngd_training', action='store_true')
-parser.add_argument('--record_ngd', action='store_true')
 parser.add_argument('--observe_norm', action='store_true')
 parser.add_argument('--log_interval', type=int, default=100)
 parser.add_argument('--config', type=str, default=None)
@@ -129,8 +121,6 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
         for optim in optimizers:
             optim.zero_grad()
 
-        is_inv_timing = is_ngd_training and (step+i) % args.inv_interval == 0  # or after_reset
-
         total_loss = 0
         total_masked_lm_loss = 0
         total_next_sentence_loss = 0
@@ -138,43 +128,19 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
             inputs = next(train_iterator)
             for key in inputs:
                 inputs[key] = inputs[key].to(device)
-            cov_cxt = asdl.no_centered_cov(model, shapes=ngd.fisher_shape, ignore_modules=ngd.ignore_modules) \
-                if is_ngd_training and is_inv_timing else nullcontext()
+            cov_cxt = nullcontext()
             with cov_cxt as cxt:
                 outputs = model(**inputs)
                 total_loss += float(outputs['loss']) / num_micro_batches_per_step
                 total_masked_lm_loss += float(outputs['masked_lm_loss']) / num_micro_batches_per_step
                 total_next_sentence_loss += float(outputs['next_sentence_loss']) / num_micro_batches_per_step
                 loss = outputs['loss']
-                if is_ngd_training:
-                    loss *= micro_batch_size * max_seq_length
-                else:
-                    loss /= num_micro_batches_per_step
+                loss /= num_micro_batches_per_step
                 no_sync_if_needed = model.no_sync() \
                     if isinstance(model, DDP) and j < grad_acc_steps - 1 \
                     else nullcontext()
                 with no_sync_if_needed:
                     loss.backward()
-                if is_ngd_training:
-                    if is_inv_timing:
-                        ngd.save_curvature(cxt=cxt, scale=1/num_tokens)
-                    loss /= num_tokens
-
-        if is_ngd_training:
-            if is_inv_timing:
-                ngd.sync_curvature(kron=['A', 'B'], enabled=is_distributed)
-                ngd.update_inv(kron=['A', 'B'], zero_curvature=True)
-            ngd.sync_grad_pre_precondition(enabled=is_distributed)
-            ngd.precondition()
-            ngd.sync_grad_post_precondition(enabled=is_distributed)
-            for p in model.parameters():
-                if p.grad is not None:
-                    p.grad.data /= num_tokens
-            if is_distributed:
-                grads = [p.grad for p in model.parameters() if p.grad is not None]
-                packed_tensor = parameters_to_vector(grads)
-                dist.all_reduce(packed_tensor)
-                vector_to_parameters(packed_tensor, grads)
 
         for optim in optimizers:
             optim.step()
@@ -204,9 +170,6 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
                     if args.observe_norm:
                         log['p_norm'] = np.sqrt(sum([float(p.data.norm()) ** 2 for p in model.parameters()]))
                         log['g_norm'] = np.sqrt(sum([float(p.grad.norm()) ** 2 for p in model.parameters() if p.grad is not None]))
-                        if is_ngd_training:
-                            log['ngd_p_norm '] = np.sqrt(sum([float(p.data.norm()) ** 2 for p in ngd_params]))
-                            log['ngd_g_norm'] = np.sqrt(sum([float(p.grad.norm()) ** 2 for p in ngd_params if p.grad is not None]))
                         for pname, p in model.named_parameters():
                             log[f'{pname}_p_norm'] = p.norm()
                             log[f'{pname}_g_norm'] = p.grad.norm()
@@ -223,10 +186,10 @@ def save_checkpoint(epoch, step):
         'model': model.module.state_dict() if isinstance(model, DDP) else model.state_dict(),
         'optimizer': optimizers[0].state_dict()
     }
-    if is_ngd_training:
-        state['ngd_optimizer'] = optimizers[1].state_dict()
+
     assert os.path.isdir(args.checkpoint_dir)
-    ckpt_file_path = os.path.join(args.checkpoint_dir, f'epoch{epoch+1}_step{step}.pt')
+    ckpt_file_path = os.path.join(
+        args.checkpoint_dir, f'epoch{epoch+1}_step{step}.pt')
     torch.save(state, ckpt_file_path)
     print(f'Saved checkpoint to {ckpt_file_path}', flush=True)
     global prev_prev_checkpoint_path, prev_checkpoint_path
@@ -254,7 +217,6 @@ if __name__ == "__main__":
     torch.cuda.manual_seed(args.seed)
 
     is_distributed = world_size > 1
-    is_ngd_training = args.record_ngd or args.ngd_training
 
     # Prepare BERT model
     bert_config = BertConfig.from_json_file(args.bert_config_path)
@@ -267,10 +229,8 @@ if __name__ == "__main__":
         packed_tensor = parameters_to_vector(model.parameters())
         dist.broadcast(packed_tensor, src=0)
         vector_to_parameters(packed_tensor, model.parameters())
-
-    if is_distributed and not is_ngd_training:
+    if is_distributed:
         model = DDP(model)
-
     # Prepare BERT dataset
     batch_size = args.batch_size
     max_seq_length = args.max_seq_length
@@ -312,44 +272,6 @@ if __name__ == "__main__":
         total_num_samples = num_steps * batch_size
         num_epochs = math.ceil(total_num_samples / len(train_dataset))
 
-    # Prepare natural gradient preconditioner
-    ngd: asdl.EmpiricalNaturalGradient = None
-    ngd_params = []
-    non_ngd_params = []
-    if is_ngd_training:
-        module_partitions = None
-        if is_distributed:
-            bert_layers = [m for m in model.modules() if isinstance(m, BertLayer)]
-            partition_size = int(len(bert_layers) / world_size)  # floor
-            if partition_size > 0:
-                module_partitions = []
-                for i in range(world_size):
-                    module_list = nn.ModuleList(bert_layers[partition_size * i: partition_size * i + partition_size])
-                    module_partitions.append([m for m in module_list.modules() if isinstance(m, nn.Linear)])
-
-        ngd = asdl.EmpiricalNaturalGradient(model,
-                                            fisher_shape=[(nn.Linear, asdl.SHAPE_KRON),
-                                                          (nn.LayerNorm, asdl.SHAPE_UNIT_WISE),
-                                                          (nn.Embedding, asdl.SHAPE_KRON)],
-                                            damping=args.damping,
-                                            ignore_modules=['cls', nn.Embedding, nn.LayerNorm],
-                                            module_partitions=module_partitions,
-                                            record_mode=args.record_ngd)
-
-        for module in model.modules():
-            if module in ngd.modules_for_curvature:
-                ngd_params += list(module.parameters())
-            else:
-                non_ngd_params += list(module.parameters())
-
-    # Prepare optimizers
-    ngd_decay_param_group = {'params': [], 'weight_decay': args.weight_decay, 'b2': -1,
-                             'lr': args.ngd_learning_rate, 'max_grad_norm': args.ngd_max_grad_norm}
-    ngd_no_decay_param_group = {'params': [], 'weight_decay': 0., 'b2': -1,
-                                'lr': args.ngd_learning_rate, 'max_grad_norm': args.ngd_max_grad_norm}
-    if args.ngd_with_adam:
-        ngd_decay_param_group.pop('b2')
-        ngd_no_decay_param_group.pop('b2')
     decay_param_group = {'params': [], 'weight_decay': args.weight_decay}
     no_decay_param_group = {'params': [], 'weight_decay': 0.}
     if args.weight_scaling:
@@ -358,26 +280,17 @@ if __name__ == "__main__":
         if 'word_embeddings' in name:
             continue
         if isinstance(m, nn.LayerNorm):
-            if is_ngd_training and m in ngd.modules_for_curvature:
-                ngd_no_decay_param_group['params'] += list(m.parameters())
-            else:
-                no_decay_param_group['params'] += list(m.parameters())
+
+            no_decay_param_group['params'] += list(m.parameters())
         elif isinstance(m, (nn.Linear, nn.Embedding)):
             if hasattr(m, 'bias') and m.bias is not None:
-                if is_ngd_training and m in ngd.modules_for_curvature:
-                    ngd_no_decay_param_group['params'].append(m.bias)
-                else:
-                    no_decay_param_group['params'].append(m.bias)
-            if is_ngd_training and m in ngd.modules_for_curvature:
-                ngd_decay_param_group['params'].append(m.weight)
-            else:
-                decay_param_group['params'].append(m.weight)
+                no_decay_param_group['params'].append(m.bias)
+            decay_param_group['params'].append(m.weight)
     optimizers = []
     lr_schedulers = []
     if args.adam:
         params = [decay_param_group, no_decay_param_group]
-        if is_ngd_training:
-            params += [ngd_decay_param_group, ngd_no_decay_param_group]
+
         optimizer = BertAdam(params,
                              lr=args.learning_rate,
                              warmup=args.warmup_proportion,
@@ -410,36 +323,16 @@ if __name__ == "__main__":
                                                  base_lr=args.learning_rate,
                                                  device=device))
         optimizers.append(optimizer)
-        if is_ngd_training:
-            if args.ngd_with_lamb:
-                optimizer = FusedLAMB([ngd_decay_param_group, ngd_no_decay_param_group], lr=args.learning_rate)
-            else:
-                optimizer = torch.optim.SGD([ngd_decay_param_group, ngd_no_decay_param_group],
-                                            lr=args.ngd_learning_rate,
-                                            momentum=args.ngd_momentum)
-                for pg in optimizer.param_groups:
-                    pg['step'] = 0
-            lr_schedulers.append(PolyWarmUpScheduler(optimizer,
-                                                     warmup=args.warmup_proportion,
-                                                     total_steps=num_steps,
-                                                     base_lr=args.ngd_learning_rate,
-                                                     device=device))
-            optimizers.append(optimizer)
 
     if checkpoint is not None:
         for group in checkpoint['optimizer']['param_groups']:
             group['step'] = 0
             group['lr'] = args.learning_rate
         optimizers[0].load_state_dict(checkpoint['optimizer'])
-        if is_ngd_training:
-            for group in checkpoint['ngd_optimizer']['param_groups']:
-                group['step'] = 0
-                group['lr'] = args.ngd_learning_rate
-            optimizers[1].load_state_dict(checkpoint['ngd_optimizer'])
 
     unused_keys = []
-    if not is_ngd_training:
-        unused_keys.extend(['ngd_learning_rate', 'ngd_momentum', 'ngd_max_grad_norm', 'damping', 'inv_interval'])
+
+    unused_keys.extend(['damping', 'inv_interval'])
     if not args.adam:
         unused_keys.extend(['beta1', 'beta2'])
     for key in unused_keys:
@@ -447,7 +340,6 @@ if __name__ == "__main__":
 
     prev_prev_checkpoint_path = prev_checkpoint_path = None
     prev_checkpoint_loss = None
-
     if is_distributed:
         dist.barrier()
     if is_master:
