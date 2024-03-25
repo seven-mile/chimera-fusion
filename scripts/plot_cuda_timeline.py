@@ -3,7 +3,9 @@ import pickle
 from collections import OrderedDict
 import re
 import numpy as np
+import os
 
+os.environ['MPLCONFIGDIR'] = os.getcwd() + "/configs/"
 import matplotlib
 matplotlib.use('Agg')
 matplotlib.rcParams.update({'font.size': 20})
