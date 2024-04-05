@@ -22,7 +22,7 @@ from bert_optim import BertAdam
 from bert_dataset import BERTDataset
 from bert_model import get_stage_bert_for_pretraining
 import auto_schedule
-from chimera_pipeline_rank import AutoGeneratePipelineRank, MyPipeLine
+from chimera_pipeline_rank import ChimeraPipelineRankStageManager
 
 #import sys
 # sys.stdout.flush()
@@ -97,13 +97,17 @@ parser.add_argument('--wandb', action='store_true')
 
 def main():
     total_steps = 0
+
     for epoch in range(num_epochs):
         dist.barrier()
         if num_replicas > 1:
             # deterministically shuffle based on epoch
             train_loader.sampler.set_epoch(epoch)
-
+            if train_loader_for_up_pipe is not None:
+                train_loader_for_up_pipe.sampler.set_epoch(epoch)
+        
         steps_for_this_epoch = min(num_steps - total_steps, max_steps_per_epoch)
+
         train_one_epoch(epoch, total_steps, steps_for_this_epoch)
         total_steps += steps_for_this_epoch
 
@@ -116,7 +120,7 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
     num_p2p_comm = num_steps_for_this_epoch * num_micro_batches_per_step
     if interleaved_pipelines:
         stage.start_interleaved_pipeline_comm_threads(num_p2p_comm)
-    elif not dual_pipelines:
+    elif not chimera_pipelines:
         stage.start_comm_threads(num_p2p_comm)
         stage.stage_module.train()
     else:
@@ -127,10 +131,10 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
         for inter_stage in stage.interleaved_stages:
             inter_stage.start_interleaved_pipeline_comm_threads(num_p2p_comm)
             inter_stage.stage_module.train()
-
+    
     train_iterator = iter(train_loader)
-    train_iterator_for_up_pipe = iter(
-        train_loader_for_up_pipe) if dual_pipelines else None
+    train_iterator_for_up_pipe = iter(train_loader_for_up_pipe) if chimera_pipelines else None
+
 
     save_cxt = nullcontext()
     save_cxt_up_pipe = nullcontext()
@@ -152,7 +156,7 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
                     loss = torch.tensor(loss, device=stage.device)
                     dist.reduce(loss, dst=0)
                     loss /= total_num_micro_batches_per_step
-                    if dual_pipelines:
+                    if chimera_pipelines:
                         loss *= 2
                     if is_master:
                         print(f'epoch{epoch+1} step{step+i+1} loss = {float(loss)}')
@@ -200,13 +204,16 @@ if __name__ == "__main__":
     recompute = args.recompute
     chunks = args.chunks
     num_pipelines = args.num_pipelines
-    dual_pipelines = args.pipeline_method == PIPELINE_CHIMERA
+    chimera_pipelines = args.pipeline_method == PIPELINE_CHIMERA
     interleaved_pipelines = args.pipeline_method == PIPELINE_INTER
+
     if interleaved_pipelines:
         assert chunks > 1
         assert num_stages % chunks == 0
         assert world_size % (num_stages // chunks) == 0
     else:
+        if chimera_pipelines:
+            assert num_pipelines > 1, "num_pipelines should be greater than 1 for chimera pipelines"
         assert world_size % num_stages == 0
 
     num_ranks_per_stage = int(world_size / num_stages)
@@ -214,8 +221,8 @@ if __name__ == "__main__":
         num_ranks_per_stage = world_size // (num_stages // chunks)
     num_replicas = num_ranks_per_stage
 
-    if dual_pipelines:
-        num_replicas *= 2
+    if chimera_pipelines:
+        num_replicas *= num_pipelines
     is_distributed = num_replicas > 1
 
     def rank_to_stage(_rank, down_pipe=True):
@@ -233,26 +240,25 @@ if __name__ == "__main__":
 
     stage_to_ranks = {_stage_id: [] for _stage_id in range(num_stages)}
     num_micro_batches_per_step = num_stages * args.gradient_accumulation_steps
-    if dual_pipelines:
-        num_micro_batches_per_step //= 2  # each pipeline handles half micro_batches
+    if chimera_pipelines:
+        assert num_micro_batches_per_step % num_pipelines == 0, \
+            "num_micro_batches_per_step should be divisible by num_pipelines"
+        num_micro_batches_per_step //= num_pipelines  # each pipeline handles half micro_batches
 
+    if chimera_pipelines:
+        prs_mgr = ChimeraPipelineRankStageManager(num_pipelines, world_size, num_stages, rank)
+    else:
+        # TODO: other PRS manager
+        prs_mgr = None
     for _rank in range(world_size):
         if interleaved_pipelines:
             stages_per_chunk = num_stages // chunks
             for _chunk in range(chunks):
                 stage_to_ranks[_rank // num_ranks_per_stage + _chunk * stages_per_chunk].append(_rank)
-        elif dual_pipelines:
-            # Chimera的stage
-            pipeline = AutoGeneratePipelineRank(
-                num_stages, num_pipelines, num_micro_batches_per_step*2)
-            pipeline.generate_pipeline()
-            for pipe in pipeline.up_pipline_list:
-                for k, v in pipe.stage_to_rank_map.items():
-                    stage_to_ranks[int(k)].append(*v)
-            for pipe in pipeline.down_pipeline_list:
-                for k, v in pipe.stage_to_rank_map.items():
-                    stage_to_ranks[int(k)].append(*v)
-            break
+        elif chimera_pipelines:
+            for _pipeline in range(num_pipelines):
+                stage = prs_mgr.get_rank_to_stage_map(_pipeline)[_rank]
+                stage_to_ranks[stage].append(_rank)
         else:
             stage_to_ranks[rank_to_stage(_rank)].append(_rank)
     # print(stage_to_ranks)
@@ -283,7 +289,7 @@ if __name__ == "__main__":
                              rank=rank,
                              grad_sync_group=grad_sync_groups[stage_id],
                              is_up_pipe=not down_pipe,
-                             pipe_stage=[] if down_pipe and dual_pipelines else None,
+                             pipe_stage=[] if down_pipe and chimera_pipelines else None,
                              interleaved_stages=[],
                              chunks=chunks,
                              nvtx_tag='' if down_pipe else auto_schedule.TAG_UP_PIPE)
@@ -366,7 +372,8 @@ if __name__ == "__main__":
         sampler = None
         if num_replicas > 1:
             rank_in_replicas = rank_in_stage = rank % num_ranks_per_stage
-            if dual_pipelines:
+            if chimera_pipelines:
+                # FIXME: use pipeline_id
                 rank_in_replicas = 2 * rank_in_stage + int(not down_pipe)
             sampler = DistributedSampler(train_dataset, num_replicas=num_replicas, rank=rank_in_replicas)
         return DataLoader(train_dataset,
@@ -376,7 +383,7 @@ if __name__ == "__main__":
                           num_workers=args.num_workers)
 
     train_loader = get_train_loader()
-    train_loader_for_up_pipe = get_train_loader(down_pipe=False) if dual_pipelines else None
+    train_loader_for_up_pipe = get_train_loader(down_pipe=False) if chimera_pipelines else None
 
     # Set the number of optimization steps and epochs
     total_num_micro_batches_per_step = num_replicas * num_micro_batches_per_step
@@ -416,7 +423,7 @@ if __name__ == "__main__":
                         t_total=num_steps,
                         max_grad_norm=args.adam_max_grad_norm)
 
-    if dual_pipelines:
+    if chimera_pipelines:
         # chimera 需要优化多个pipeline
         optimizers = []
         for s in stages:

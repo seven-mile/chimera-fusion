@@ -14,10 +14,7 @@ from torch.cuda import nvtx
 
 import threading
 import threadsafe_queue
-from auto_schedule import PIPELINE_END, FORWARD, BACKWARD, \
-    COV_KRON_A, COV_KRON_B, INV_KRON_A, INV_KRON_B, SYNC_KRON_A, SYNC_KRON_B, \
-    TURN_OFF_SAVE, TURN_ON_SAVE, TAG_UP_PIPE
-from chimera_pipeline_rank import AutoGeneratePipelineRank, MyPipeLine
+from chimera_pipeline_rank import ChimeraScheduleManager, CellType
 
 PIPELINE_1F1B = '1f1b'
 PIPELINE_GPIPE = 'gpipe'
@@ -487,16 +484,13 @@ class PipelineStage:
             schedule_number_a = -schedule_number_a + 1
         schedule_number_b = half_stages - schedule_number_a
 
+
         def call(func_name, index, down_or_up, up_side_down=False, with_data=False):
             args = []
             if with_data:
                 data = next(data_iterator) if down_or_up == 'down' else next(
                     data_iterator_for_up_pipe)
                 args.append(data)
-            # if down_or_up == 'down':
-            #     getattr(self, func_name)(*args)
-            # else:
-            #     getattr(self.pipe_stage, func_name)(*args)
             getattr(self.pipe_stage[index], func_name)(*args)
 
         def forward(index, down_or_up):
@@ -515,36 +509,27 @@ class PipelineStage:
         def sync_grad(index, down_or_up):
             if not no_sync_grad:
                 call('nb_sync_grad', index, down_or_up)
-        pipeline = AutoGeneratePipelineRank(
-            self.num_stages, 2, num_micro_batches*2)
-        pipeline.generate_pipeline()
-        schedule_pipeline = pipeline.get_schedule(True)
-        pipeline_schedule = []
-        for sub_schedule in schedule_pipeline:
-            pipeline_schedule.append(sub_schedule)
-        for sub_schedule in pipeline_schedule:
-            if sub_schedule[self.stage_id] != '':
-                index, up_down, forward_backward = sub_schedule[self.stage_id].split(
-                    "@")
-                index = int(index)  
-                if forward_backward == 'f':
-                    forward(index, up_down)
-                elif forward_backward == 'b':
-                    backward(index, up_down)
-                elif forward_backward == 's':
-                    sync_grad(index, up_down)
-        #f r sub_schedule in schedule_pipeline:
-            #print(sub_schedule)
-            #if sub_schedule[self.stage_id] != '':
+        
+        num_pipelines = 2
+        print((num_pipelines, self.num_stages, self.num_stages, self.rank, num_micro_batches * num_pipelines), flush=True)
+        sched_mgr = ChimeraScheduleManager(num_pipelines, self.num_stages, self.num_stages, self.rank, num_micro_batches * num_pipelines)
+        print('our sched:', flush=True)
+        print(sched_mgr, flush=True)
+        
+        for cell in sched_mgr.get_schedule(self.rank):
+            if cell.is_idle():
+                continue
 
-            #    index, up_down, forward_backward = sub_schedule[self.stage_id].split(
-            #        "@")
-            #    index = int(index)
-            #    if forward_backward == 'f':
-            #        forward(index, up_down)
-            #    elif forward_backward == 'b':
-            #        backward(index, up_down)
-            #    elif forward_backward == 's':
-            #        sync_grad(index, up_down)
-            #    print(self.rank, sub_schedule[self.stage_id])   
+            index = cell.pipeline_id ^ 1
+            down_or_up = 'down' if cell.pipeline_id == 0 else 'up'
+
+
+            if cell.type == CellType.FORWARD:
+                forward(index, down_or_up)
+            elif cell.type == CellType.BACKWARD:
+                backward(index, down_or_up)
+            elif cell.type == CellType.SYNC:
+                # FIXME: insert SYNC cells
+                sync_grad(index, down_or_up)
+            
         wait_all()
