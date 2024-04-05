@@ -1,5 +1,5 @@
 
-from chimera_pipeline_rank import AutoGeneratePipelineRank, ChimeraScheduleManager, ChimeraPipelineRankStageManager
+from chimera_pipeline_rank import ChimeraScheduleManager, ChimeraPipelineRankStageManager, DapplePipelineRankStageManager
 
 
 if __name__ == '__main__':
@@ -9,29 +9,19 @@ if __name__ == '__main__':
     micro_size = 4
     
     this_rank = 0
-    num_devices = num_stages
+    num_devices = num_stages * 2
 
-    # Create a pipeline rank object
-    autogen = AutoGeneratePipelineRank(num_stages, num_pipelines, micro_size)
-    autogen.generate_pipeline()
+    chimera_prs = ChimeraPipelineRankStageManager(num_pipelines, num_devices, num_stages, this_rank)
+    dapple_prs = DapplePipelineRankStageManager(num_devices, num_stages, this_rank)
+
+    print(chimera_prs.get_rank_to_stage_map(0), chimera_prs.get_rank_to_stage_map(1))
+    print(dapple_prs.get_rank_to_stage_map())
+    print(dapple_prs.get_stage_to_rank_map())
+
+    print(chimera_prs.get_stage_to_ranks_map())
+    print(dapple_prs.get_stage_to_ranks_map())
 
     # Create a pipeline rank stage manager object
     pipeline_rank_stage_manager = ChimeraScheduleManager(num_pipelines, num_devices, num_stages, this_rank, micro_size)
 
-    autogen_res = list(autogen.get_schedule(True))
-    print(autogen_res)
-    for i in range(num_stages):
-        for j in range(len(autogen_res)):
-            cell = autogen_res[j][i]
-            if cell == '':
-                print('    ', end='')
-            else:
-                micro, pipeline, ty = cell.split('@')
-                micro = int(micro)
-                print('{0: >3}{1}'.format(micro, ty), end='')
-        print()
-
     print(pipeline_rank_stage_manager)
-
-    
-
