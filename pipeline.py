@@ -39,8 +39,19 @@ class StageModule(nn.Module):
         raise NotImplementedError
 
 
+class GuardedThread(threading.Thread):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def run(self):
+        try:
+            super().run()
+        except Exception as e:
+            print(f'Error in thread {self}: {e}', flush=True)
+
+
 def start_comm_thread(func, kwargs):
-    comm_thread = threading.Thread(target=func, kwargs=kwargs)
+    comm_thread = GuardedThread(target=func, kwargs=kwargs)
     comm_thread.daemon = True
     comm_thread.start()
 
@@ -297,8 +308,9 @@ class PipelineStage:
             return self.stage_module.no_sync()
         return nullcontext()
 
-    @nvtx.range('sync_grad')
     def sync_grad(self):
+        # FIXME: remove redundancy
+        nvtx.range_push('sync_grad')
         nvtx.range_push('sync_grad' + self.nvtx_tag)
 
         assert self.grad_sync_group is not None, 'grad_sync_group is not specified.'
@@ -309,6 +321,7 @@ class PipelineStage:
         packed_tensor /= self.grad_sync_group.size()
         vector_to_parameters(packed_tensor, grads)
 
+        nvtx.range_pop()
         nvtx.range_pop()
 
     def nb_sync_grad(self):
@@ -341,7 +354,6 @@ class PipelineStage:
             for key, queue in queues.items():
                 assert len(queue) == 0, f'{name}_queue for {key} of stage{self.stage_id} is not empty.'
 
-    @nvtx.range('call_pipeline')
     def call_pipeline(self,
                       data_iterator: Iterator,
                       num_micro_batches,
@@ -349,6 +361,8 @@ class PipelineStage:
                       data_iterator_for_up_pipe: Iterator = None,
                       iteration: int = None,
                       no_sync_grad=False):
+        nvtx.range_push('call_pipeline')
+
         if pipeline_method is None:
             pipeline_method = self.pipeline_method
 
@@ -369,6 +383,8 @@ class PipelineStage:
         self.assert_intermediate_queues_are_empty()
         _call_pipeline(**kwargs)
         self.assert_intermediate_queues_are_empty()
+
+        nvtx.range_pop()
         return self.total_loss
 
     def _call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches, no_sync_grad=False):

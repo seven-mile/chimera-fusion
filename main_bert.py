@@ -450,8 +450,14 @@ if __name__ == "__main__":
             print(f'{key}: {value}')
         print('============================')
 
-    if args.profile:
-        with torch.cuda.profiler.profile():
+    try:
+        if args.profile:
+            # with torch.cuda.profiler.profile():
+            torch.cuda.check_error(torch.cuda.cudart().cudaProfilerStart())
             main()
-    else:
-        main()
+            torch.cuda.check_error(torch.cuda.cudart().cudaProfilerStop())
+        else:
+            main()
+    except Exception as e:
+        print('Exception in main thread:', e, flush=True)
+        raise
