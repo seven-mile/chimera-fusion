@@ -13,6 +13,7 @@ from torch.cuda import nvtx
 
 
 import threading
+from pipeline_context import PipelineContext
 import threadsafe_queue
 from chimera_pipeline_rank import ChimeraScheduleManager, CellType
 
@@ -52,49 +53,83 @@ def start_comm_thread(func, kwargs):
     comm_thread.daemon = True
     comm_thread.start()
 
+class StageCommunicationManager:
 
-class PipelineStage:
-    def __init__(self,
-                 stage_id: int,
-                 num_stages: int,
-                 stage_module: Union[StageModule, DistributedDataParallel],
-                 batch_sizes: Tuple[int, ...],
-                 prev_rank: int = None,
-                 next_rank: int = None,
-                 rank: int = None,
-                 grad_sync_group: dist.ProcessGroup = None,
-                 pipeline_method: str = None,
-                 recompute: bool = False,
-                 is_up_pipe: bool = False,
-                 chunks: int = None,
-                 pipe_stage=None,
-                 interleaved_stages: List = [],
-                 nvtx_tag=''):
-        assert dist.is_initialized(), 'torch.distributed needs to be initialized.'
-        assert num_stages > 1, 'num_stages has to be > 1.'
-        assert stage_id in range(
-            num_stages), 'stage_id has be in range(num_stage).'
+    def __init__(self, device: torch.device):
+        """
+        Initialize the communication manager for the pipeline stage.
+
+        Args:
+            device (torch.device): Device to store tensors.
+        """
+        self.device = device
+
+    @staticmethod
+    def _recv_comm_thread(num_iterations, queue, src_rank, tag, tensor_shape, device):
+        for _ in range(num_iterations):
+            recv_tensor = torch.zeros(tensor_shape, requires_grad=True)
+            if dist.get_backend() == dist.Backend.NCCL:
+                recv_tensor = recv_tensor.to(device)
+            dist.recv(tensor=recv_tensor, src=src_rank, tag=tag)
+            queue.add(recv_tensor.to(device))
+
+    @staticmethod
+    def _send_comm_thread(num_iterations, queue, dst_rank, tag):
+        for _ in range(num_iterations):
+            send_tensor = queue.remove()
+            if dist.get_backend() != dist.Backend.NCCL:
+                send_tensor = send_tensor.cpu()
+            
+            dist.send(tensor=send_tensor, dst=dst_rank, tag=tag)
+
+    def start_recv_threads(self, num_iterations, recv_queues, src_rank, tensor_shapes, tag):
+        """
+        Start threads for receiving tensors from the source rank.
+
+        Args:
+            num_iterations (int): Number of iterations to receive tensors.
+            recv_queues (Dict[str, Queue]): Mapping the key of parameters to the queues to store their received tensors.
+            src_rank (int): Source rank to receive tensors.
+            tensor_shapes (Dict[str, Tuple[int]]): Shapes of tensors to receive, including batch size.
+        """
+        for key, queue in recv_queues.items():
+            start_comm_thread(self._recv_comm_thread,
+                                dict(num_iterations=num_iterations,
+                                    queue=queue,
+                                    src_rank=src_rank,
+                                    tag=tag,
+                                    tensor_shape=tensor_shapes[key],
+                                    device=self.device))
+
+    def start_send_threads(self, num_iterations, send_queues, dst_rank, tag):
+        """
+        Start threads for sending tensors to the destination rank.
+
+        Args:
+            num_iterations (int): Number of iterations to send tensors.
+            send_queues (Dict[str, Queue]): Mapping the key of parameters to the queues to send their tensors.
+            dst_rank (int): Destination rank to send tensors.
+        """
+        for queue in send_queues.values():
+            start_comm_thread(self._send_comm_thread,
+                                dict(num_iterations=num_iterations,
+                                    queue=queue,
+                                    dst_rank=dst_rank,
+                                    tag=tag))
+
+
+class Stage:
+
+    def __init__(self, pctx: PipelineContext, stage_id: int, prs_key: int, stage_module: Union[StageModule, DistributedDataParallel]):
+        self.pctx = pctx
         self.stage_id = stage_id
-        self.num_stages = num_stages
+        self.prs_key = prs_key
         self.stage_module = stage_module
-        self.batch_sizes = batch_sizes
+
         self.input_output_queue: Deque[Tuple[OrderedDict[str, Tensor], OrderedDict[str, Tensor]]] = deque()
-        self.prev_rank = prev_rank
-        self.next_rank = next_rank
-        self.rank = rank
-        self.grad_sync_group = grad_sync_group
-        self.device = next(stage_module.parameters()).device
+
         self.total_loss = 0.
-        self.pipeline_method = pipeline_method
-        self.recompute = recompute
-        self.is_up_pipe = is_up_pipe
-        if not self.is_up_pipe and self.pipeline_method == PIPELINE_CHIMERA:
-            assert pipe_stage is not None, 'Up pipeline should be created.'
-        self.pipe_stage = pipe_stage
-        self.interleaved_stages = interleaved_stages
-        self.chunks = chunks
-        self.tag = 2 if is_up_pipe else 1
-        self.nvtx_tag = nvtx_tag
+        self.nvtx_tag = ':up_pipe' if self.is_up_pipe else ''
 
         self.forward_recv_queues = {}
         self.backward_recv_queues = {}
@@ -105,15 +140,37 @@ class PipelineStage:
         self.grads = []
         self.packed_grads = []
 
-        self.init_comm_queues()
-
+        self._init_comm_queues()
+    
     @property
     def is_first_stage(self):
         return self.stage_id == 0
 
     @property
     def is_last_stage(self):
-        return self.stage_id == self.num_stages - 1
+        return self.stage_id == self.pctx.num_stages - 1
+
+    @property
+    def prev_rank(self):
+        if self.stage_id > 0:
+            return self.pctx.stage_rank_mgr.get_stage_to_rank_map(self.prs_key)[self.stage_id - 1]
+        else:
+            return None
+        
+    @property
+    def next_rank(self):
+        if self.stage_id < self.pctx.num_stages - 1:
+            return self.pctx.stage_rank_mgr.get_stage_to_rank_map(self.prs_key)[self.stage_id + 1]
+        else:
+            return None
+    
+    @property
+    def is_up_pipe(self):
+        return self.pctx.is_chimera and self.prs_key >= self.pctx.num_prs_keys // 2
+
+    @property
+    def p2p_tag(self):
+        return 2 if self.is_up_pipe else 1
 
     @property
     def keys_from_source(self):
@@ -142,90 +199,14 @@ class PipelineStage:
     @property
     def keys_for_next_stage(self):
         return list(self.sizes_for_next_stage.keys())
+    
+    @property
+    def grad_sync_group(self):
+        return self.pctx.sync_groups[self.stage_id]
 
     @property
     def is_distributed(self):
         return self.grad_sync_group is not None and self.grad_sync_group.size() > 1
-
-    def init_comm_queues(self):
-        if not self.is_last_stage:
-            for key in self.keys_for_next_stage:
-                self.backward_recv_queues[key] = threadsafe_queue.Queue()
-                self.forward_send_queues[key] = threadsafe_queue.Queue()
-        if not self.is_first_stage:
-            for key in self.keys_from_prev_stage:
-                self.forward_recv_queues[key] = threadsafe_queue.Queue()
-                self.backward_send_queues[key] = threadsafe_queue.Queue()
-
-    @staticmethod
-    def recv_comm_thread(num_iterations, queue, src_rank, tag, tensor_shape, device):
-        for _ in range(num_iterations):
-            recv_tensor = torch.zeros(tensor_shape, requires_grad=True)
-            if dist.get_backend() == dist.Backend.NCCL:
-                recv_tensor = recv_tensor.to(device)
-            dist.recv(tensor=recv_tensor, src=src_rank, tag=tag)
-            queue.add(recv_tensor.to(device))
-
-    @staticmethod
-    def send_comm_thread(num_iterations, queue, dst_rank, tag):
-        for _ in range(num_iterations):
-            send_tensor = queue.remove()
-            if dist.get_backend() != dist.Backend.NCCL:
-                send_tensor = send_tensor.cpu()
-            
-            dist.send(tensor=send_tensor, dst=dst_rank, tag=tag)
-
-    def start_comm_threads(self, num_iterations):
-        def start_recv_threads(recv_queues, src_rank, tensor_shapes):
-            for key, queue in recv_queues.items():
-                start_comm_thread(self.recv_comm_thread,
-                                  dict(num_iterations=num_iterations,
-                                       queue=queue,
-                                       src_rank=src_rank,
-                                       tag=self.tag,
-                                       tensor_shape=self.batch_sizes + tensor_shapes[key],
-                                       device=self.device))
-
-        def start_send_threads(queues, dst_rank):
-            for queue in queues.values():
-                start_comm_thread(self.send_comm_thread,
-                                  dict(num_iterations=num_iterations,
-                                       queue=queue,
-                                       dst_rank=dst_rank,
-                                       tag=self.tag))
-
-        start_recv_threads(self.forward_recv_queues, self.prev_rank, self.sizes_from_prev_stage)
-        start_send_threads(self.forward_send_queues, self.next_rank)
-        start_recv_threads(self.backward_recv_queues, self.next_rank, self.sizes_for_next_stage)
-        start_send_threads(self.backward_send_queues, self.prev_rank)
-
-    def start_interleaved_pipeline_comm_threads(self, num_iterations):
-        def start_recv_threads(recv_queues, src_rank, tensor_shapes, tag):
-            for key, queue in recv_queues.items():
-                start_comm_thread(self.recv_comm_thread,
-                                  dict(num_iterations=num_iterations,
-                                       queue=queue,
-                                       src_rank=src_rank,
-                                       tag=tag,
-                                       tensor_shape=self.batch_sizes + tensor_shapes[key],
-                                       device=self.device))
-
-        def start_send_threads(queues, dst_rank, tag):
-            for queue in queues.values():
-                start_comm_thread(self.send_comm_thread,
-                                  dict(num_iterations=num_iterations,
-                                       queue=queue,
-                                       dst_rank=dst_rank,
-                                       tag=tag))
-
-        start_recv_threads(self.forward_recv_queues, self.prev_rank, self.sizes_from_prev_stage, self.stage_id)
-        start_send_threads(self.forward_send_queues, self.next_rank, self.stage_id+1)
-        start_recv_threads(self.backward_recv_queues, self.next_rank, self.sizes_for_next_stage, self.stage_id+1)
-        start_send_threads(self.backward_send_queues, self.prev_rank, self.stage_id)
-        #start_recv_threads(self.forward_recv_queues, self.prev_rank, self.sizes_from_prev_stage, 1)
-        #start_send_threads(self.forward_send_queues, self.next_rank, 1)
-        #start_recv_threads(self.backward_recv_queues, self.next_rank, self.sizes_for_next_stage, 1)
-        #start_send_threads(self.backward_send_queues, self.prev_rank, 1)
 
     def send_outputs_to_queue(self, key, tensor):
         self.forward_send_queues[key].add(tensor)
@@ -245,18 +226,26 @@ class PipelineStage:
         inputs = collections.OrderedDict()
         if not self.is_first_stage:
             for key in self.keys_from_prev_stage:
+                print(f'Z stage{self.stage_id} recv input', key, flush=True)
                 inputs[key] = self.recv_inputs_from_queue(key)
+                print(f'Z stage{self.stage_id} recv input ok ', key, flush=True)
         for key in self.keys_from_source:
-            inputs[key] = input_source[key].to(self.device)
+            inputs[key] = input_source[key].to(self.pctx.device)
         assert len(inputs) > 0, 'No input is set.'
 
-        no_grad_if_recompute = torch.no_grad if self.recompute else nullcontext
+        no_grad_if_recompute = torch.no_grad if self.pctx.recompute else nullcontext
         with no_grad_if_recompute():
-            outputs = self.stage_module(**inputs)
+            try:
+                outputs = self.stage_module(**inputs)
+            except Exception as e:
+                print(f'Error in stage{self.stage_id} calculation: {e}', flush=True)
+                raise
 
         if not self.is_last_stage:
             for key in outputs:
+                print(f'Z stage{self.stage_id} send output', key, flush=True)
                 self.send_outputs_to_queue(key, outputs[key])
+                print(f'Z stage{self.stage_id} send output ok', key, flush=True)
         else:
             self.total_loss += float(outputs['loss'])
 
@@ -270,7 +259,7 @@ class PipelineStage:
         assert len(self.input_output_queue) > 0, 'No input/output is set.'
         # pop inputs/outputs from the queue
         inputs, outputs = self.input_output_queue.popleft()
-        if self.recompute:
+        if self.pctx.recompute:
             with nvtx.range('recompute'):
                 outputs = self.stage_module(**inputs)
 
@@ -306,8 +295,6 @@ class PipelineStage:
         return nullcontext()
 
     def sync_grad(self):
-        # FIXME: remove redundancy
-        nvtx.range_push('sync_grad')
         nvtx.range_push('sync_grad' + self.nvtx_tag)
 
         assert self.grad_sync_group is not None, 'grad_sync_group is not specified.'
@@ -317,20 +304,6 @@ class PipelineStage:
         dist.all_reduce(packed_tensor, group=self.grad_sync_group)
         packed_tensor /= self.grad_sync_group.size()
         vector_to_parameters(packed_tensor, grads)
-
-        nvtx.range_pop()
-        nvtx.range_pop()
-
-    def nb_sync_grad(self):
-        nvtx.range_push('nb_sync_grad' + self.nvtx_tag)
-
-        assert self.grad_sync_group is not None, 'grad_sync_group is not specified.'
-        dist.barrier(group=self.grad_sync_group)
-        grads = [p.grad for p in self.stage_module.parameters() if p.grad is not None]
-        self.grads.append(grads)
-        packed_tensor = parameters_to_vector(self.grads[-1])
-        self.packed_grads.append(packed_tensor)
-        self.handles.append(dist.all_reduce(self.packed_grads[-1], group=self.grad_sync_group, async_op=True))
 
         nvtx.range_pop()
 
@@ -350,186 +323,107 @@ class PipelineStage:
                              ('backward_recv', self.backward_recv_queues)]:
             for key, queue in queues.items():
                 assert len(queue) == 0, f'{name}_queue for {key} of stage{self.stage_id} is not empty.'
+    
+    def _init_comm_queues(self):
+        if not self.is_last_stage:
+            for key in self.keys_for_next_stage:
+                self.backward_recv_queues[key] = threadsafe_queue.Queue()
+                self.forward_send_queues[key] = threadsafe_queue.Queue()
+        if not self.is_first_stage:
+            for key in self.keys_from_prev_stage:
+                self.forward_recv_queues[key] = threadsafe_queue.Queue()
+                self.backward_send_queues[key] = threadsafe_queue.Queue()
 
-    def call_pipeline(self,
-                      data_iterator: Iterator,
-                      num_micro_batches,
-                      pipeline_method=None,
-                      data_iterator_for_up_pipe: Iterator = None,
-                      iteration: int = None,
-                      no_sync_grad=False):
+
+class PipelineExecutor:
+
+    def __init__(self,
+                 pctx: PipelineContext,
+                 stages: Dict[int, Stage],
+                 data_iters: List[Iterator],
+                 num_interations: int):
+        """
+        Initialize the pipeline executor.
+        
+        Args:
+            pctx (PipelineContext): Pipeline context.
+            stages (Dict[int, PipelineStage]): Dict of stage ids and their corresponding pipeline stages.
+            data_iters (List[Iterator]): List of data iterators.
+            num_interations (int): Number of iterations.
+        """
+        
+        self.pctx = pctx
+        self.stages = stages
+        self.data_iters = data_iters
+        self.num_interations = num_interations
+
+        self.sched = self.pctx.sched_mgr.get_schedule(self.pctx.world_rank)
+
+        self.comms = self._init_comm()
+
+        for stage in self.stages.values():
+            stage.stage_module.train()
+
+    def _init_comm(self):
+        # TODO: impl for interleaved
+        if self.pctx.is_interleaved:
+            raise NotImplementedError
+
+        comms = {}
+        for stage in self.stages.values():
+            comm = StageCommunicationManager(self.pctx.device)
+
+            def prepend_batch_sizes(shape_dict: Dict[str, Tuple]):
+                return {key: self.pctx.batch_sizes + shape for key, shape in shape_dict.items()}
+
+            comm.start_recv_threads(self.num_interations, stage.forward_recv_queues, stage.prev_rank, prepend_batch_sizes(stage.sizes_from_prev_stage), stage.p2p_tag)
+            comm.start_send_threads(self.num_interations, stage.forward_send_queues, stage.next_rank, stage.p2p_tag)
+            comm.start_recv_threads(self.num_interations, stage.backward_recv_queues, stage.next_rank, prepend_batch_sizes(stage.sizes_for_next_stage), stage.p2p_tag)
+            comm.start_send_threads(self.num_interations, stage.backward_send_queues, stage.prev_rank, stage.p2p_tag)
+            comms[stage.stage_id] = comm
+
+        return comms
+    
+    def _assert_intermediate_queues_are_empty(self):
+        """
+        Assert that all intermediate queues are empty.
+        """
+        for stage in self.stages.values():
+            stage.assert_intermediate_queues_are_empty()
+
+    def run(self, iteration: int = None):
+        """
+        Run the pipeline for one iteration.
+
+        Args:
+            iteration (int): Iteration id.
+
+        Returns:
+            float: Total loss of the pipeline.
+        """
+
         nvtx.range_push('call_pipeline')
 
-        if pipeline_method is None:
-            pipeline_method = self.pipeline_method
+        self._assert_intermediate_queues_are_empty()
 
-        kwargs = dict(data_iterator=data_iterator, num_micro_batches=num_micro_batches, no_sync_grad=no_sync_grad)
-        if pipeline_method == PIPELINE_1F1B:
-            _call_pipeline = self._call_1f1b_pipeline
-        elif pipeline_method == PIPELINE_INTER:
-            _call_pipeline = self._call_interleaved_1f1b_pipeline
-        elif pipeline_method == PIPELINE_GPIPE:
-            _call_pipeline = self._call_gpipe_pipeline
-        elif pipeline_method == PIPELINE_CHIMERA:
-            _call_pipeline = self._call_chimera_pipeline
-            kwargs['data_iterator_for_up_pipe'] = data_iterator_for_up_pipe
-        else:
-            raise ValueError(f'Invalid pipeline_method: {pipeline_method}')
-
-        self.total_loss = 0.
-        self.assert_intermediate_queues_are_empty()
-        _call_pipeline(**kwargs)
-        self.assert_intermediate_queues_are_empty()
-
-        nvtx.range_pop()
-        return self.total_loss
-
-    def _call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches, no_sync_grad=False):
-        """
-        1F1B
-        """
-        num_warmup_steps = self.num_stages - self.stage_id - 1
-
-        for _ in range(num_warmup_steps):
-            self.call_forward(next(data_iterator))
-        for _ in range(num_micro_batches - num_warmup_steps - 1):
-            self.call_forward(next(data_iterator))
-            self.call_backward()
-        self.call_forward(next(data_iterator))
-        for _ in range(num_warmup_steps):
-            self.call_backward()
-        self.call_backward()
-
-        if self.is_distributed and not no_sync_grad:
-            self.sync_grad()
-
-    def _call_interleaved_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches, no_sync_grad=False):
-        """
-        Interleaved 1F1B
-        """
-        num_micro_batches = num_micro_batches*self.chunks
-        pipeline_parallel_size = self.num_stages // self.chunks
-        pipeline_parallel_rank = self.stage_id % pipeline_parallel_size
-
-        num_warmup_steps = (pipeline_parallel_size - pipeline_parallel_rank - 1) * 2
-        num_warmup_steps += (self.chunks - 1) * pipeline_parallel_size
-
-        forward_counter = 0
-        backward_counter = 0
-
-        for _ in range(num_warmup_steps):
-            forward_chunk_id = (forward_counter // pipeline_parallel_size) % self.chunks
-            if forward_chunk_id == 0:
-                self.call_forward(next(data_iterator))
-            else:
-                self.interleaved_stages[forward_chunk_id - 1].call_forward(next(data_iterator))
-            forward_counter += 1
-        for _ in range(num_micro_batches - num_warmup_steps):
-            forward_chunk_id = (forward_counter // pipeline_parallel_size) % self.chunks
-            if forward_chunk_id == 0:
-                self.call_forward(next(data_iterator))
-            else:
-                self.interleaved_stages[forward_chunk_id - 1].call_forward(next(data_iterator))
-            forward_counter += 1
-
-            backward_chunk_id = self.chunks - (backward_counter // pipeline_parallel_size) % self.chunks - 1
-            if backward_chunk_id == 0:
-                self.call_backward()
-            else:
-                self.interleaved_stages[backward_chunk_id-1].call_backward()
-            backward_counter += 1
-
-        for _ in range(num_warmup_steps):
-            backward_chunk_id = self.chunks - (backward_counter // pipeline_parallel_size) % self.chunks - 1
-            if backward_chunk_id == 0:
-                self.call_backward()
-            else:
-                self.interleaved_stages[backward_chunk_id-1].call_backward()
-            backward_counter += 1
-        
-        if self.is_distributed and not no_sync_grad:
-            self.sync_grad()
-            for stage in self.interleaved_stages:
-                stage.sync_grad()
-
-    def _call_gpipe_pipeline(self, data_iterator: Iterator, num_micro_batches, no_sync_grad=False):
-        """
-        GPipe
-        """
-        for _ in range(num_micro_batches):
-            self.call_forward(next(data_iterator))
-
-        for _ in range(num_micro_batches):
-            self.call_backward()
-
-        if self.is_distributed and not no_sync_grad:
-            self.sync_grad()
-
-    def _call_chimera_pipeline(self,
-                               data_iterator: Iterator,
-                               data_iterator_for_up_pipe: Iterator,
-                               num_micro_batches,
-                               no_sync_grad=False):
-        """
-        Chimera with dual pipelines
-        """
-        assert self.num_stages % 2 == 0, 'The number of stages should be an even value.'
-        assert num_micro_batches * 2 % self.num_stages == 0, 'num_micro_batches*2 should be a multiple of num_stages.'
-        acc_steps = num_micro_batches * 2 // self.num_stages
-        half_stages = self.num_stages // 2
-        first_half = self.stage_id // half_stages == 0
-
-        schedule_number_a = half_stages - self.stage_id
-        if schedule_number_a <= 0:
-            schedule_number_a = -schedule_number_a + 1
-        schedule_number_b = half_stages - schedule_number_a
-
-
-        def call(func_name, index, down_or_up, up_side_down=False, with_data=False):
-            args = []
-            if with_data:
-                data = next(data_iterator) if down_or_up == 'down' else next(
-                    data_iterator_for_up_pipe)
-                args.append(data)
-            getattr(self.pipe_stage[index], func_name)(*args)
-
-        def forward(index, down_or_up):
-            call('call_forward', index, down_or_up,
-                 up_side_down=not first_half, with_data=True)
-
-        def backward(index, down_or_up):
-            call('call_backward', index, down_or_up,
-                 up_side_down=not first_half)
-        def wait_all():
-            if not no_sync_grad:
-                 
-                for s in self.pipe_stage:
-                    s.wait_all()
-
-        def sync_grad(index, down_or_up):
-            if not no_sync_grad:
-                call('nb_sync_grad', index, down_or_up)
-        
-        num_pipelines = 2
-        print((num_pipelines, self.num_stages, self.num_stages, self.rank, num_micro_batches * num_pipelines), flush=True)
-        sched_mgr = ChimeraScheduleManager(num_pipelines, self.num_stages, self.num_stages, self.rank, num_micro_batches * num_pipelines)
-        print('our sched:', flush=True)
-        print(sched_mgr, flush=True)
-        
-        for cell in sched_mgr.get_schedule(self.rank):
+        for cell in self.sched:
             if cell.is_idle():
                 continue
 
-            index = cell.pipeline_id ^ 1
-            down_or_up = 'down' if cell.pipeline_id == 0 else 'up'
+            print(f'Z scheduling cell {cell}', flush=True)
 
-
+            stage = self.stages[cell.stage_id]
             if cell.type == CellType.FORWARD:
-                forward(index, down_or_up)
+                stage.call_forward(next(self.data_iters[cell.pipeline_id]))
             elif cell.type == CellType.BACKWARD:
-                backward(index, down_or_up)
+                stage.call_backward()
             elif cell.type == CellType.SYNC:
-                # FIXME: insert SYNC cells
-                sync_grad(index, down_or_up)
-            
-        wait_all()
+                stage.sync_grad()
+
+        stage.wait_all()
+
+        self._assert_intermediate_queues_are_empty()
+
+        nvtx.range_pop()
+
+        return stage.total_loss

@@ -10,6 +10,38 @@ class PipelineRankStageManager:
     pipeline stages and device ranks.
     """
 
+    @property
+    def num_prs_keys(self):
+        """
+        Get the number of PRS keys.
+        
+        `pipeline_id` for Chimera, `chunk_id` for Interleaved, `1` for DAPPLE.
+
+        Returns:
+            int: The number of PRS keys.
+        """
+        raise NotImplementedError
+    
+    @property
+    def num_stages(self):
+        """
+        Get the number of stages.
+
+        Returns:
+            int: The number of stages.
+        """
+        raise NotImplementedError
+    
+    @property
+    def num_devices(self):
+        """
+        Get the number of devices.
+
+        Returns:
+            int: The number of devices.
+        """
+        raise NotImplementedError
+
     def get_rank_to_stage_map(self, key: Optional[int] = None) -> List[int]:
         """
         Get the rank to stage map of the pipeline with the given index.
@@ -43,6 +75,21 @@ class PipelineRankStageManager:
             NotImplementedError: This method should be implemented by subclasses.
         """
         raise NotImplementedError
+    
+    def get_stage_to_ranks_map(self) -> List[List[int]]:
+        """
+        Get the stage to ranks map.
+
+        Returns:
+            List[List[int]]: The stage to ranks map.
+        """
+        stage_to_ranks = [set() for i in range(self.num_stages)]
+        for _rank in range(self.num_devices):
+            for _key in range(self.num_prs_keys):
+                stage = self.get_rank_to_stage_map(_key)[_rank]
+                stage_to_ranks[stage].add(_rank)
+        
+        return [list(ranks) for ranks in stage_to_ranks]
 
 
 class ChimeraPipelineRankStageManager(PipelineRankStageManager):
@@ -117,6 +164,18 @@ class ChimeraPipelineRankStageManager(PipelineRankStageManager):
         self._num_stages = num_stages
         self._this_rank = rank
         self._construct()
+
+    @property
+    def num_prs_keys(self):
+        return self._num_pipelines
+    
+    @property
+    def num_stages(self):
+        return self._num_stages
+    
+    @property
+    def num_devices(self):
+        return self._num_devices
 
     def get_rank_to_stage_map(self, pipeline_id: int) -> List[int]:
         """
@@ -212,7 +271,19 @@ class DapplePipelineRankStageManager(PipelineRankStageManager):
         self._this_rank = rank
         self._construct()
 
-    def get_rank_to_stage_map(self) -> List[int]:
+    @property
+    def num_prs_keys(self):
+        return 1
+    
+    @property
+    def num_stages(self):
+        return self._num_stages
+    
+    @property
+    def num_devices(self):
+        return self._num_devices
+
+    def get_rank_to_stage_map(self, _=None) -> List[int]:
         """
         Get the rank to stage map of the pipeline with the given index.
 
@@ -221,7 +292,7 @@ class DapplePipelineRankStageManager(PipelineRankStageManager):
         """
         return self._rank_to_stage_map
     
-    def get_stage_to_rank_map(self) -> List[int]:
+    def get_stage_to_rank_map(self, _=None) -> List[int]:
         """
         Get the stage to rank map of the pipeline with the given index.
 
@@ -274,6 +345,27 @@ class ScheduleCell:
 
     def is_idle(self):
         return self.type == CellType.IDLE
+
+
+class PipelineScheduleManager:
+    """
+    PipelineScheduleManager is an abstract class that produces the schedule of the pipelines.
+    """
+
+    def get_schedule(self, rank: int) -> List[ScheduleCell]:
+        """
+        Get the schedule of the pipeline with the given rank.
+
+        Args:
+            rank (int): The rank of the pipeline.
+
+        Returns:
+            List[ScheduleCell]: The schedule, `schedule[time_step][rank]` is the cell in the schedule table.
+
+        Raises:
+            NotImplementedError: This method should be implemented by subclasses.
+        """
+        raise NotImplementedError
 
 
 class BlockType(Enum):
