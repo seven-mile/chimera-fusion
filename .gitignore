@@ -3,3 +3,4 @@ output/
 bert_prof/
 fontlist*.json
 wikipedia.segmented.nltk.txt
+test/
