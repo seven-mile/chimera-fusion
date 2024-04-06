@@ -3,6 +3,7 @@ from itertools import chain
 import os
 import random
 import math
+import traceback
 import yaml
 
 import numpy as np
@@ -287,5 +288,6 @@ if __name__ == "__main__":
         else:
             main()
     except Exception as e:
-        print('Exception in main thread:', e, flush=True)
+        print('Exception in main thread:', type(e), e, flush=True)
+        print(traceback.format_exc())
         raise

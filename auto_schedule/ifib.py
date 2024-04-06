@@ -147,14 +147,12 @@ class IFIBPipelineScheduleManager(PipelineScheduleManager):
                 forward()
             
             # 1f1b phase
-            for _ in range(self._micro_size - num_warmup_steps - 1):
+            for _ in range(self._micro_size - num_warmup_steps):
                 forward()
                 backward()
-            forward()
             
             for _ in range(num_warmup_steps):
                 backward()
-            backward()
             
             sched.append(ScheduleCell(CellType.SYNC, stage_id=rank))
 
@@ -172,8 +170,8 @@ class IFIBPipelineScheduleManager(PipelineScheduleManager):
         if rank < 0 or rank >= self._num_devices:
             raise ValueError("The rank of the current process should be in the range of [0, num_devices)")
         
-        per_pipeline_devices = self._num_devices // self._num_stages
-        group_rank = rank // per_pipeline_devices
+        device_group_size = self._num_devices // self._num_stages
+        group_rank = rank // device_group_size
 
         return self._schedule[group_rank]
     

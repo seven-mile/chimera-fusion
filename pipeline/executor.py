@@ -38,21 +38,24 @@ class PipelineExecutor:
             stage.stage_module.train()
 
     def _init_scms(self):
-        # TODO: impl for interleaved
-        if self.pctx.is_interleaved:
-            raise NotImplementedError
 
         scms = {}
         for stage in self.stages.values():
+            sid = stage.stage_id
             scm = comm.StageCommunicationManager(self.pctx.device)
 
             def prepend_batch_sizes(shape_dict: Dict[str, Tuple]):
                 return {key: self.pctx.batch_sizes + shape for key, shape in shape_dict.items()}
 
-            scm.start_recv_threads(self.num_interations, stage.forward_recv_queues, stage.prev_rank, prepend_batch_sizes(stage.sizes_from_prev_stage), stage.p2p_tag)
-            scm.start_send_threads(self.num_interations, stage.forward_send_queues, stage.next_rank, stage.p2p_tag)
-            scm.start_recv_threads(self.num_interations, stage.backward_recv_queues, stage.next_rank, prepend_batch_sizes(stage.sizes_for_next_stage), stage.p2p_tag)
-            scm.start_send_threads(self.num_interations, stage.backward_send_queues, stage.prev_rank, stage.p2p_tag)
+            if self.pctx.is_interleaved:
+                tags = [sid, sid+1, sid+1, sid]
+            else:
+                tags = [stage.p2p_tag] * 4
+
+            scm.start_recv_threads(self.num_interations, stage.forward_recv_queues, stage.prev_rank, prepend_batch_sizes(stage.sizes_from_prev_stage), tags[0])
+            scm.start_send_threads(self.num_interations, stage.forward_send_queues, stage.next_rank, tags[1])
+            scm.start_recv_threads(self.num_interations, stage.backward_recv_queues, stage.next_rank, prepend_batch_sizes(stage.sizes_for_next_stage), tags[2])
+            scm.start_send_threads(self.num_interations, stage.backward_send_queues, stage.prev_rank, tags[3])
             scms[stage.stage_id] = scm
 
         return scms
@@ -86,7 +89,7 @@ class PipelineExecutor:
             print(f'Z scheduling cell {cell}', flush=True)
 
             stage = self.stages[cell.stage_id]
-            # print(f'Z communication prev_rank {stage.prev_rank} next_rank {stage.next_rank}', flush=True)
+            print(f'Z communication prev_rank {stage.prev_rank} next_rank {stage.next_rank}', flush=True)
             if cell.is_sync():
                 stage.sync_grad()
             elif cell.is_forward():

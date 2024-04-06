@@ -1,9 +1,9 @@
 model=bert-large
 
 # pipeline='gpipe'
-pipeline='1f1b'
+# pipeline='1f1b'
 # pipeline='chimera'
-# pipeline='interleaved'
+pipeline='interleaved'
 
 stages=8
 ngpus=8

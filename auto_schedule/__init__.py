@@ -18,6 +18,7 @@ from .ifib import (
 
 from .interleaved import (
     InterleavedPipelineRankStageManager,
+    InterleavedPipelineScheduleManager,
 )
 
 def create_pipeline_rank_stage_manager(
@@ -31,22 +32,24 @@ def create_pipeline_rank_stage_manager(
         return ChimeraPipelineRankStageManager(num_prs_keys, num_devices, num_stages, world_rank)
     elif method == ScheduleMethod.INTERLEAVED:
         return InterleavedPipelineRankStageManager(num_prs_keys, num_devices, num_stages, world_rank)
-    else:
+    elif method == ScheduleMethod.IFIB:
         return IFIBPipelineRankStageManager(num_devices, num_stages, world_rank)
+    else:
+        raise NotImplementedError
 
 
 def create_pipeline_schedule_manager(
     method: ScheduleMethod,
-    num_pipelines: int,
+    num_prs_keys: int,
     num_devices: int,
     num_stages: int,
     world_rank: int,
     micro_size: int,
 ) -> PipelineScheduleManager:
     if method == ScheduleMethod.CHIMERA:
-        return ChimeraPipelineScheduleManager(num_pipelines, num_devices, num_stages, world_rank, micro_size)
+        return ChimeraPipelineScheduleManager(num_prs_keys, num_devices, num_stages, world_rank, micro_size)
     elif method == ScheduleMethod.INTERLEAVED:
-        raise NotImplementedError
+        return InterleavedPipelineScheduleManager(num_prs_keys, num_devices, num_stages, world_rank, micro_size)
     elif method == ScheduleMethod.IFIB:
         return IFIBPipelineScheduleManager(num_devices, num_stages, world_rank, micro_size)
     else:

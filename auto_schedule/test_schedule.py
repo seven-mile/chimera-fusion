@@ -9,6 +9,7 @@ from . import (
     create_pipeline_schedule_manager,
     ChimeraPipelineScheduleManager,
     IFIBPipelineScheduleManager,
+    InterleavedPipelineScheduleManager,
 )
 
 chimera_prs_tests = [
@@ -55,4 +56,13 @@ def test_1f1b_schedule(num_stages, micro_size, this_rank, num_devices):
     mgr: IFIBPipelineScheduleManager = create_pipeline_schedule_manager(ScheduleMethod.IFIB, 1, num_devices, num_stages, this_rank, micro_size)
     assert isinstance(mgr, IFIBPipelineScheduleManager)
     
+    # TODO: Add more assertions
+    print(mgr, flush=True)
+
+@pytest.mark.parametrize("num_chunks, num_stages, micro_size, this_rank, num_devices", [(2, 8, 8, 0, 8)])
+def test_interleaved_schedule(num_chunks, num_stages, micro_size, this_rank, num_devices):
+    mgr: InterleavedPipelineScheduleManager = create_pipeline_schedule_manager(ScheduleMethod.INTERLEAVED, num_chunks, num_devices, num_stages, this_rank, micro_size)
+    assert isinstance(mgr, InterleavedPipelineScheduleManager)
+    
+    # TODO: Add more assertions
     print(mgr, flush=True)

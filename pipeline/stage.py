@@ -67,9 +67,7 @@ class PipelineStage:
 
     @property
     def p2p_tag(self):
-        if self.pctx.is_chimera:
-            return self.prs_key + 1
-        return 1
+        return self.prs_key
 
     @property
     def keys_from_source(self):

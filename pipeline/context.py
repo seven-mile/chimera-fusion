@@ -132,4 +132,4 @@ class PipelineContext:
         return create_pipeline_rank_stage_manager(self.pipeline_method, self.num_prs_keys, self.world_size, self.num_stages, self.world_rank)
     
     def _get_sched_mgr(self) -> PipelineScheduleManager:
-        return create_pipeline_schedule_manager(self.pipeline_method, self.num_pipelines, self.world_size, self.num_stages, self.world_rank, self.micro_size)
+        return create_pipeline_schedule_manager(self.pipeline_method, self.num_prs_keys, self.world_size, self.num_stages, self.world_rank, self.micro_size)
