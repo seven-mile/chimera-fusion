@@ -5,22 +5,22 @@ model=bert-large
 #pipeline='gpipe'
 #pipeline='1f1b'
 pipeline='chimera'
-#pipeline='interleave'
+#pipeline='interleaved'
 stages=8
 ngpus=8
 microbs=32
 acc=1
 
 chimera_pipelines=4
-interleave_chunks=2
+interleaved_chunks=2
 
 base_dir=bert_prof
 main_event_text=call_pipeline
 
 if [ $pipeline == 'chimera' ]; then
     name=${model}_${chimera_pipelines}${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
-elif [ $pipeline == 'interleave' ]; then
-    name=${model}_${interleave_chunks}${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
+elif [ $pipeline == 'interleaved' ]; then
+    name=${model}_${interleaved_chunks}${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
 else
     name=${model}_${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
 fi

@@ -440,3 +440,4 @@ avg duration 1302.6322745
 avg duration 1248.631909
 avg duration 1068.9739965
 avg duration 1080.684477
+avg duration 1075.3167355

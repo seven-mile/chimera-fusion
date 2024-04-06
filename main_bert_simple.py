@@ -15,14 +15,11 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
-from transformers import BertTokenizer, BertConfig, BertLayer
+from transformers import BertTokenizer, BertConfig
 
-from utils import init_dist_process_group
-from bert_optim import BertAdam
-from bert_dataset import BERTDataset
-from bert_optim import PolyWarmUpScheduler
-from bert_model import BertForPreTrainingEx
+from comm import init_dist_process_group
 
+from model import BertAdam, BertDataset, BertForPreTrainingEx, PolyWarmUpScheduler
 from apex.optimizers import FusedLAMB
 
 try:
@@ -241,7 +238,7 @@ if __name__ == "__main__":
     assert local_batch_size % grad_acc_steps == 0
     micro_batch_size = local_batch_size // grad_acc_steps
     tokenizer = BertTokenizer(args.vocab_path, do_lower_case=args.do_lower_case)
-    train_dataset = BERTDataset(args.corpus_path,
+    train_dataset = BertDataset(args.corpus_path,
                                 tokenizer,
                                 seq_len=max_seq_length,
                                 corpus_lines=args.corpus_lines,

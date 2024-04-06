@@ -18,21 +18,21 @@ model=bert-large
 #pipeline='gpipe'
 #pipeline='1f1b'
 pipeline='chimera'
-# pipeline='interleave'
+# pipeline='interleaved'
 stages=8
 ngpus=8
 microbs=32
 acc=1
 
 chimera_pipelines=4
-interleave_chunks=2
+interleaved_chunks=2
 
 export NSYS_NODE_INTERVAL=$((ngpus/stages))
 
 if [ $pipeline == 'chimera' ]; then
     export NSYS_OUTPUT=bert_prof/${model}_${chimera_pipelines}${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
-elif [ $pipeline == 'interleave' ]; then
-    export NSYS_OUTPUT=bert_prof/${model}_${interleave_chunks}${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
+elif [ $pipeline == 'interleaved' ]; then
+    export NSYS_OUTPUT=bert_prof/${model}_${interleaved_chunks}${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
 else
     export NSYS_OUTPUT=bert_prof/${model}_${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
 fi
@@ -59,5 +59,5 @@ srun --wait=0 bash scripts/nsys_wrap.sh \
             --p2p_backend 'gloo' \
             --collective_backend 'nccl' \
             --profile \
-            --chunks $interleave_chunks \
+            --chunks $interleaved_chunks \
             --num_pipelines $chimera_pipelines

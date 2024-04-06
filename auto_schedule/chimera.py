@@ -1,96 +1,12 @@
 import copy
-from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional
+from typing import List
 
-
-class PipelineRankStageManager:
-    """
-    PipelineRankStageManager is an abstract class that manages the mapping between
-    pipeline stages and device ranks.
-    """
-
-    @property
-    def num_prs_keys(self):
-        """
-        Get the number of PRS keys.
-        
-        `pipeline_id` for Chimera, `chunk_id` for Interleaved, `1` for DAPPLE.
-
-        Returns:
-            int: The number of PRS keys.
-        """
-        raise NotImplementedError
-    
-    @property
-    def num_stages(self):
-        """
-        Get the number of stages.
-
-        Returns:
-            int: The number of stages.
-        """
-        raise NotImplementedError
-    
-    @property
-    def num_devices(self):
-        """
-        Get the number of devices.
-
-        Returns:
-            int: The number of devices.
-        """
-        raise NotImplementedError
-
-    def get_rank_to_stage_map(self, key: Optional[int] = None) -> List[int]:
-        """
-        Get the rank to stage map of the pipeline with the given index.
-
-        Args:
-            key (int): The index of the mapping. \
-                `pipeline_id` for Chimera, `chunk_id` for Interleaved, \
-                `None` for DAPPLE.
-
-        Returns:
-            List[int]: The rank to stage map.
-
-        Raises:
-            NotImplementedError: This method should be implemented by subclasses.
-        """
-        raise NotImplementedError
-
-    def get_stage_to_rank_map(self, key: Optional[int] = None) -> List[int]:
-        """
-        Get the stage to rank map of the pipeline with the given index.
-
-        Args:
-            key (int): The index of the mapping. \
-                `pipeline_id` for Chimera, `chunk_id` for Interleaved, \
-                `None` for DAPPLE.
-
-        Returns:
-            List[int]: The stage to rank map.
-
-        Raises:
-            NotImplementedError: This method should be implemented by subclasses.
-        """
-        raise NotImplementedError
-    
-    def get_stage_to_ranks_map(self) -> List[List[int]]:
-        """
-        Get the stage to ranks map.
-
-        Returns:
-            List[List[int]]: The stage to ranks map.
-        """
-        stage_to_ranks = [set() for i in range(self.num_stages)]
-        for _rank in range(self.num_devices):
-            for _key in range(self.num_prs_keys):
-                stage = self.get_rank_to_stage_map(_key)[_rank]
-                stage_to_ranks[stage].add(_rank)
-        
-        return [list(ranks) for ranks in stage_to_ranks]
-
+from .proto import (
+    CellType,
+    ScheduleCell,
+    PipelineRankStageManager
+)
 
 class ChimeraPipelineRankStageManager(PipelineRankStageManager):
     """
@@ -239,135 +155,6 @@ class ChimeraPipelineRankStageManager(PipelineRankStageManager):
                 start_rank = (start_rank + step + self._num_devices) % self._num_devices
 
 
-class DapplePipelineRankStageManager(PipelineRankStageManager):
-    """
-    PipelineRankStageManager for DAPPLE pipeline scheduling.
-
-    The mapping is straightforward:
-    - stage index is rank id
-    - rank id is the corresponding rank among the devices of the pipeline stage
-    """
-    def __init__(self, num_devices: int, num_stages: int, rank: int):
-        """
-        Initialize the DapplePipelineRankStageManager.
-
-        Args:
-            num_devices (int): The number of devices.
-            num_stages (int): The number of stages.
-            rank (int): The rank of the current process.
-        """
-
-        if num_devices <= 0 or num_stages <= 0:
-            raise ValueError("The number of devices and stages should be positive integers")
-        
-        if rank < 0 or rank >= num_devices:
-            raise ValueError("The rank of the current process should be in the range of [0, num_devices)")
-        
-        if num_devices % num_stages != 0:
-            raise ValueError("The number of devices should be a multiple of the number of stages")
-
-        self._num_devices = num_devices
-        self._num_stages = num_stages
-        self._this_rank = rank
-        self._construct()
-
-    @property
-    def num_prs_keys(self):
-        return 1
-    
-    @property
-    def num_stages(self):
-        return self._num_stages
-    
-    @property
-    def num_devices(self):
-        return self._num_devices
-
-    def get_rank_to_stage_map(self, _=None) -> List[int]:
-        """
-        Get the rank to stage map of the pipeline with the given index.
-
-        Returns:
-            List[int]: The rank to stage map.
-        """
-        return self._rank_to_stage_map
-    
-    def get_stage_to_rank_map(self, _=None) -> List[int]:
-        """
-        Get the stage to rank map of the pipeline with the given index.
-
-        Returns:
-            List[int]: The stage to rank map.
-        """
-        return self._stage_to_rank_map
-    
-    def _construct(self):
-        self._stage_to_rank_map = [-1 for _ in range(self._num_stages)]
-        self._rank_to_stage_map = [-1 for _ in range(self._num_devices)]
-
-        per_stage_devices = self._num_devices // self._num_stages
-        this_local_rank = self._this_rank % per_stage_devices
-
-        for stage_id in range(self._num_stages):
-            base_rank = stage_id * per_stage_devices
-            self._stage_to_rank_map[stage_id] = base_rank + this_local_rank
-            for local_rank in range(per_stage_devices):
-                self._rank_to_stage_map[base_rank + local_rank] = stage_id
-
-
-class CellType(Enum):
-    """
-    An enumeration of the types of cells in the schedule table.
-    """
-    IDLE = 'i'
-    FORWARD = 'f'
-    BACKWARD = 'b'
-    SYNC = 's'
-
-
-@dataclass
-class ScheduleCell:
-    """
-    A data class representing a cell in the schedule table.
-    """
-    type: CellType = CellType.IDLE
-    micro_id: int = -1
-    pipeline_id: int = -1
-    stage_id: int = -1
-    time_step: int = -1
-    forward_double: bool = False
-
-    def is_forward(self):
-        return self.type == CellType.FORWARD
-
-    def is_sync(self):
-        return self.type == CellType.SYNC
-
-    def is_idle(self):
-        return self.type == CellType.IDLE
-
-
-class PipelineScheduleManager:
-    """
-    PipelineScheduleManager is an abstract class that produces the schedule of the pipelines.
-    """
-
-    def get_schedule(self, rank: int) -> List[ScheduleCell]:
-        """
-        Get the schedule of the pipeline with the given rank.
-
-        Args:
-            rank (int): The rank of the pipeline.
-
-        Returns:
-            List[ScheduleCell]: The schedule, `schedule[time_step][rank]` is the cell in the schedule table.
-
-        Raises:
-            NotImplementedError: This method should be implemented by subclasses.
-        """
-        raise NotImplementedError
-
-
 class BlockType(Enum):
     """
     An enumeration of the types of blocks in the schedule table.
@@ -508,7 +295,7 @@ class ChimeraBlock:
         return result
 
 
-class ChimeraScheduleManager:
+class ChimeraPipelineScheduleManager:
     """
     A class that produces the schedule of the Chimera pipelines.
     """
@@ -643,7 +430,7 @@ class ChimeraScheduleManager:
                 cur_micro_id += micro_per_pipeline_block
 
         for i in range(len(blocks)-1, 0, -1):
-            blocks[i-1].schedule = ChimeraScheduleManager._merge_chimera_block(blocks[i-1], blocks[i])
+            blocks[i-1].schedule = ChimeraPipelineScheduleManager._merge_chimera_block(blocks[i-1], blocks[i])
         
         self.schedule = blocks[0].schedule
     
@@ -688,27 +475,3 @@ class ChimeraScheduleManager:
         result += ')\n'
 
         return result
-
-
-if __name__ == "__main__":
-    num_stages = 8
-    num_pipelines = 4
-    num_devices = 16
-    micro_size = 24
-    this_rank = 0
-    print(f"stage:{num_stages}  num_pipelines:{num_pipelines} micro_size:{micro_size}")
-
-    stage_mgr = ChimeraPipelineRankStageManager(num_pipelines, num_devices, num_stages, this_rank)
-    print('Stage To Rank')
-    print(stage_mgr._stage_to_rank_map)
-    print()
-    print('Rank To Stage')
-    print(stage_mgr._rank_to_stage_map)
-
-    sched_mgr = ChimeraScheduleManager(num_pipelines, num_devices, num_stages, this_rank, micro_size)
-    sched = sched_mgr.get_schedule(this_rank)
-    print()
-    print('Schedule')
-    print(sched_mgr)
-
-    exit(0)

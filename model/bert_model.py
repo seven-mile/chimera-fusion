@@ -8,7 +8,7 @@ import torch
 from torch.nn import CrossEntropyLoss
 from transformers.modeling_utils import ModuleUtilsMixin, ModelOutput
 from transformers.models.bert import BertConfig, BertForPreTraining, BertModel, BertPreTrainedModel
-from pipeline import StageModule
+from .proto import StageModule
 
 # prepare a minimum size dummy model for extracting Module classes
 dummy_config = BertConfig.from_dict({

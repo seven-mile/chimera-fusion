@@ -1,25 +1,15 @@
-
-
-from dataclasses import dataclass
-from enum import Enum
-
 import torch
 import torch.distributed
 
-from chimera_pipeline_rank import (
+from auto_schedule import (
+    ScheduleMethod,
     PipelineRankStageManager,
     PipelineScheduleManager,
-    ChimeraPipelineRankStageManager,
-    DapplePipelineRankStageManager,
-    ChimeraScheduleManager,
+    create_pipeline_rank_stage_manager,
+    create_pipeline_schedule_manager,
 )
-from utils import init_dist_process_group
 
-class PipelineMethod(Enum):
-    GPIPE = 'gpipe'
-    ONE_F_ONE_B = '1f1b'
-    INTERLEAVED = 'interleaved'
-    CHIMERA = 'chimera'
+from comm import init_dist_process_group
 
 
 class PipelineContext:
@@ -31,7 +21,7 @@ class PipelineContext:
         self.world_rank = world_rank
         self.device = torch.device('cuda', torch.cuda.current_device())
 
-        self.pipeline_method = PipelineMethod(pipeline_method)
+        self.pipeline_method = ScheduleMethod(pipeline_method)
         self.num_stages = num_stages
         self.micro_batch_size = micro_batch_size
         self.gradient_accumulation_steps = gradient_accumulation_steps
@@ -50,7 +40,11 @@ class PipelineContext:
     # derived properties
     @property
     def num_prs_keys(self):
-        return self.stage_rank_mgr.num_prs_keys
+        if self.is_chimera:
+            return self.num_pipelines
+        elif self.is_interleaved:
+            return self.num_chunks
+        return 1
     
     @property
     def is_distriubted(self):
@@ -62,11 +56,11 @@ class PipelineContext:
     
     @property
     def is_chimera(self):
-        return self.pipeline_method == PipelineMethod.CHIMERA
+        return self.pipeline_method == ScheduleMethod.CHIMERA
     
     @property
     def is_interleaved(self):
-        return self.pipeline_method == PipelineMethod.INTERLEAVED
+        return self.pipeline_method == ScheduleMethod.INTERLEAVED
 
     @property
     def num_ranks_per_stage(self):
@@ -104,7 +98,7 @@ class PipelineContext:
         assert self.world_size > 0
         assert self.world_rank >= 0
         assert self.num_replicas > 0
-        assert self.pipeline_method in PipelineMethod
+        assert self.pipeline_method in ScheduleMethod
         assert self.num_stages > 0
         assert self.micro_batch_size > 0
         assert self.stage_rank_mgr is not None
@@ -135,15 +129,7 @@ class PipelineContext:
         ]
 
     def _get_prs_mgr(self) -> PipelineRankStageManager:
-        if self.is_chimera:
-            return ChimeraPipelineRankStageManager(self.num_pipelines, self.world_size, self.num_stages, self.world_rank)
-        elif self.is_interleaved:
-            raise NotImplementedError
-        else:
-            return DapplePipelineRankStageManager(self.world_size, self.num_stages, self.world_rank)
+        return create_pipeline_rank_stage_manager(self.pipeline_method, self.num_prs_keys, self.world_size, self.num_stages, self.world_rank)
     
     def _get_sched_mgr(self) -> PipelineScheduleManager:
-        if self.is_chimera:
-            return ChimeraScheduleManager(self.num_pipelines, self.world_size, self.num_stages, self.world_rank, self.micro_size)
-        else:
-            raise NotImplementedError
+        return create_pipeline_schedule_manager(self.pipeline_method, self.num_pipelines, self.world_size, self.num_stages, self.world_rank, self.micro_size)

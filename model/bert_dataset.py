@@ -4,7 +4,7 @@ import torch
 from torch.utils.data import Dataset
 
 
-class BERTDataset(Dataset):
+class BertDataset(Dataset):
     def __init__(self, corpus_path, tokenizer, seq_len, encoding="utf-8", corpus_lines=None, on_memory=False):
         self.vocab = tokenizer.vocab
         self.tokenizer = tokenizer

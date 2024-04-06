@@ -20,6 +20,7 @@ promise
 protobuf
 psutil
 pyparsing
+pytest
 python-dateutil
 pytz
 PyYAML

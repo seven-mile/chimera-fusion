@@ -3,7 +3,6 @@ from itertools import chain
 import os
 import random
 import math
-from contextlib import nullcontext
 import yaml
 
 import numpy as np
@@ -14,15 +13,9 @@ from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
 
 from transformers import BertTokenizer, BertConfig
+from model import BertAdam, BertDataset, get_stage_bert_for_pretraining
 
-from pipeline_context import PipelineContext
-from pipeline import PipelineExecutor, Stage, PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA, PIPELINE_INTER
-from bert_optim import BertAdam
-from bert_dataset import BERTDataset
-from bert_model import get_stage_bert_for_pretraining
-
-#import sys
-# sys.stdout.flush()
+from pipeline import PipelineContext, PipelineExecutor, PipelineStage
 
 try:
     import wandb
@@ -66,7 +59,7 @@ parser.add_argument("--warmup_proportion", default=0.1, type=float,
 parser.add_argument("--damping", type=float, default=0.01)
 # Pipeline
 parser.add_argument('--pipeline_method', choices=[
-                    PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA, PIPELINE_INTER], default=PIPELINE_1F1B)
+                    '1f1b', 'gpipe', 'chimera', 'interleaved'], default='1f1b')
 parser.add_argument("--chunks", default=2, type=int,
                     help="Number of chunks for interleaved 1f1b.")
 parser.add_argument('--recompute', action='store_true',
@@ -197,7 +190,7 @@ if __name__ == "__main__":
                                                       bert_config
                                                      ).to(pctx.device)
 
-        return Stage(pctx, stage_id, prs_key, stage_module)
+        return PipelineStage(pctx, stage_id, prs_key, stage_module)
 
     stages = [get_pipeline_stage(prs_key) for prs_key in range(pctx.num_prs_keys)]
 
@@ -205,7 +198,7 @@ if __name__ == "__main__":
 
     # Prepare BERT dataset
     tokenizer = BertTokenizer(args.vocab_path, do_lower_case=args.do_lower_case)
-    train_dataset = BERTDataset(args.corpus_path,
+    train_dataset = BertDataset(args.corpus_path,
                                 tokenizer,
                                 seq_len=max_seq_length,
                                 corpus_lines=args.corpus_lines,
