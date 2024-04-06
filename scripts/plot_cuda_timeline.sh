@@ -16,6 +16,7 @@ name=${model}_${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${ac
 main_event_text=call_pipeline
 
 sqlite_paths=$(find ${base_dir} -type f -name "${name}_node*.sqlite" | sort )
+job_ids=()
 
 for sqlite_path in $sqlite_paths
 do
@@ -27,11 +28,24 @@ do
         --ignore_first_event \
         --main_event_indices '5,6,7' \
         --event_keywords call_forward,call_backward,cov_kron_A,cov_kron_B,inv_kron_A,inv_kron_B,precondition,reduce,gather,sync \
-        --main_event_text $main_event_text
+        --main_event_text $main_event_text &
+    job_ids+=($!)
+done
+
+echo waiting for jobs ${job_ids[@]} ...
+for job_id in ${job_ids[@]}
+do
+    wait $job_id
+done
+
+echo cleaning up ...
+for sqlite_path in $sqlite_paths
+do
     rm -f $sqlite_path
     nsys_path=${base_dir}/$(basename ${sqlite_path} | cut -f 1 -d '.' ).nsys-rep
     rm -f $nsys_path
 done
+
 pickle_paths=""
 for pickle_path in $(find ${base_dir} -type f -name "${name}_node*_timeline.pickle" | sort )
 do
