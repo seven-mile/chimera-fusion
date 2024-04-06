@@ -16,16 +16,22 @@ chimera_prs_tests = [
     (ScheduleMethod.CHIMERA, 2, 4, 1, 8),
     (ScheduleMethod.CHIMERA, 2, 4, 0, 16),
     (ScheduleMethod.CHIMERA, 4, 8, 0, 16),
+    (ScheduleMethod.IFIB, 1, 8, 0, 8),
+    (ScheduleMethod.IFIB, 1, 8, 0, 16),
+    (ScheduleMethod.IFIB, 1, 8, 7, 16),
+    (ScheduleMethod.INTERLEAVED, 2, 16, 0, 8),
 ]
 
 @pytest.mark.parametrize("method, num_prs_keys, num_stages, this_rank, num_devices", chimera_prs_tests)
 def test_prs(method, num_prs_keys, num_stages, this_rank, num_devices):
-    num_devices_per_stage = num_devices // num_stages
+
+    num_devices_per_stage = num_prs_keys * num_devices // num_stages
     
     mgr = create_pipeline_rank_stage_manager(method, num_prs_keys, num_devices, num_stages, this_rank)
     assert len(mgr.get_stage_to_ranks_map()) == num_stages, "The number of stages should be equal to the length of the stage to ranks map"
-    assert all(len(mgr.get_stage_to_ranks_map()[i]) == num_prs_keys * num_devices_per_stage for i in range(num_stages)), \
-        "The product should be equal to the number of ranks in the stage to ranks map"
+    
+    assert all(len(mgr.get_stage_to_ranks_map()[i]) == num_devices_per_stage for i in range(num_stages)), \
+        "The number of ranks in the stage to ranks map should be equal to the number of devices per stage"
 
     for key in range(num_prs_keys):
         s2r = mgr.get_stage_to_rank_map(key)
