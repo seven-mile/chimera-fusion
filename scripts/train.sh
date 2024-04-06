@@ -1,23 +1,32 @@
 #!/bin/bash -l
-#SBATCH --nodes=32
-#SBATCH --ntasks=32
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=12
+#SBATCH --nodes=1
+#SBATCH --ntasks=8
+#SBATCH --ntasks-per-node=8
+#SBATCH --gres=gpu:8
+#SBATCH --cpus-per-task=4
 #SBATCH --time=00:05:00
+#SBATCH --output=output/bert_train_%j.out
+#SBATCH --comment bupthpc
 
 export MASTER_ADDR=$(hostname)
 export MASTER_PORT=1234
 
+module load nvidia/cuda/11.8
+conda activate pipefisher
+
 model=bert-base
 
 # phase1
-bs=8192
+bs=1024
 acc=8
 seq_len=128
 lr=6.e-3
 nsteps=7038
 ckpt_steps=1750
 warmup=0.2843
+
+# Debug NCCL
+export NCCL_DEBUG=info
 
 srun python main_bert_simple.py \
         --corpus_path ./bert_data/wikipedia.segmented.nltk.txt \

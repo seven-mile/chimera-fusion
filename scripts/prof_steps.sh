@@ -2,31 +2,48 @@
 #SBATCH --nodes=8
 #SBATCH --ntasks=8
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=12
-#SBATCH --time=00:05:00
-#SBATCH --partition=normal
-#SBATCH --constraint=gpu
-#SBATCH --account=g34
-#SBATCH --output=interleave6.txt
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=00:10:00
+#SBATCH --output=output/prof_steps.out
+#SBATCH --comment bupthpc
 
-module load daint-gpu
-conda activate py38_kfac
+module load nvidia/cuda/11.8
+conda activate pipefisher
+
 export MASTER_ADDR=$(hostname)
 
 #model=bert-base
 model=bert-large
 #pipeline='gpipe'
 #pipeline='1f1b'
-#pipeline='chimera'
-pipeline='interleave'
+pipeline='chimera'
+# pipeline='interleave'
 stages=8
 ngpus=8
 microbs=32
 acc=1
-export NSYS_NODE_INTERVAL=$((ngpus/stages))
-export NSYS_OUTPUT=bert_prof/${model}_${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
 
-srun --wait=0 scripts/nsys_wrap.sh \
+chimera_pipelines=4
+interleave_chunks=2
+
+export NSYS_NODE_INTERVAL=$((ngpus/stages))
+
+if [ $pipeline == 'chimera' ]; then
+    export NSYS_OUTPUT=bert_prof/${model}_${chimera_pipelines}${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
+elif [ $pipeline == 'interleave' ]; then
+    export NSYS_OUTPUT=bert_prof/${model}_${interleave_chunks}${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
+else
+    export NSYS_OUTPUT=bert_prof/${model}_${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
+fi
+
+# Debug NCCL
+# export NCCL_DEBUG=info
+# export NCCL_DEBUG_SUBSYS=ALL
+
+echo "Running with $pipeline pipeline, $stages stages, $ngpus gpus, $microbs microbatches, $acc gradient accumulation steps"
+
+srun --wait=0 bash scripts/nsys_wrap.sh \
     python main_bert.py \
             --num_stages $stages \
             --corpus_path ./bert_data/wikipedia.segmented.nltk.txt \
@@ -42,4 +59,5 @@ srun --wait=0 scripts/nsys_wrap.sh \
             --p2p_backend 'gloo' \
             --collective_backend 'nccl' \
             --profile \
-	    --chunks 2 \
+            --chunks $interleave_chunks \
+            --num_pipelines $chimera_pipelines

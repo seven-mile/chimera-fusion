@@ -18,8 +18,8 @@ then
         -c cudaProfilerApi \
         --trace cuda,nvtx,cudnn,osrt \
         --export sqlite \
-        $@ 2>&1 | tee output/logs/rank${SLURM_PROCID}.log
+        $@ 2>&1 > output/logs/rank${SLURM_PROCID}.log
 else
-    $@ 2>&1 | tee output/logs/rank${SLURM_PROCID}.log
+    $@ 2>&1 > output/logs/rank${SLURM_PROCID}.log
 fi
 sleep 30  # wait for nsys to complete
