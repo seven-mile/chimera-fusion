@@ -115,8 +115,7 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
 
     num_p2p_comm = num_steps_for_this_epoch * pctx.num_micro_batches_per_step
 
-    if pctx.is_chimera:
-        data_iters = list(map(iter, train_loaders))
+    data_iters = list(map(iter, train_loaders))
 
     stage_dict = {stage.stage_id: stage for stage in stages}
     executor = PipelineExecutor(pctx, stage_dict, data_iters, num_p2p_comm)
@@ -184,7 +183,7 @@ if __name__ == "__main__":
         max_seq_length=args.max_seq_length
     )
 
-    print('Z sched:', pctx.sched_mgr, flush=True)
+    print('got sched:', pctx.sched_mgr, flush=True)
 
     # Prepare BERT pipeline stages
     bert_config = BertConfig.from_json_file(args.bert_config_path)

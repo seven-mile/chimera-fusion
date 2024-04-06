@@ -170,7 +170,9 @@ class Stage:
 
     @property
     def p2p_tag(self):
-        return 2 if self.is_up_pipe else 1
+        if self.pctx.is_chimera:
+            return self.prs_key + 1
+        return 1
 
     @property
     def keys_from_source(self):
@@ -226,9 +228,7 @@ class Stage:
         inputs = collections.OrderedDict()
         if not self.is_first_stage:
             for key in self.keys_from_prev_stage:
-                print(f'Z stage{self.stage_id} recv input', key, flush=True)
                 inputs[key] = self.recv_inputs_from_queue(key)
-                print(f'Z stage{self.stage_id} recv input ok ', key, flush=True)
         for key in self.keys_from_source:
             inputs[key] = input_source[key].to(self.pctx.device)
         assert len(inputs) > 0, 'No input is set.'
@@ -243,9 +243,7 @@ class Stage:
 
         if not self.is_last_stage:
             for key in outputs:
-                print(f'Z stage{self.stage_id} send output', key, flush=True)
                 self.send_outputs_to_queue(key, outputs[key])
-                print(f'Z stage{self.stage_id} send output ok', key, flush=True)
         else:
             self.total_loss += float(outputs['loss'])
 
@@ -413,6 +411,7 @@ class PipelineExecutor:
             print(f'Z scheduling cell {cell}', flush=True)
 
             stage = self.stages[cell.stage_id]
+            # print(f'Z communication prev_rank {stage.prev_rank} next_rank {stage.next_rank}', flush=True)
             if cell.type == CellType.FORWARD:
                 stage.call_forward(next(self.data_iters[cell.pipeline_id]))
             elif cell.type == CellType.BACKWARD:
@@ -420,7 +419,9 @@ class PipelineExecutor:
             elif cell.type == CellType.SYNC:
                 stage.sync_grad()
 
-        stage.wait_all()
+        # TODO: no need for sync_grad
+        for stage in self.stages.values():
+            stage.wait_all()
 
         self._assert_intermediate_queues_are_empty()
 
