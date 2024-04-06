@@ -72,6 +72,9 @@ class ChimeraPipelineRankStageManager(PipelineRankStageManager):
         if num_pipelines & (num_pipelines - 1) != 0:
             raise ValueError("The number of pipelines should be a power of 2")
         
+        if num_stages & (num_stages - 1) != 0:
+            raise ValueError("The number of stages should be a power of 2")
+        
         if num_pipelines > num_stages:
             raise ValueError("The number of pipelines should not be greater than the number of stages")
 
@@ -155,7 +158,7 @@ class ChimeraPipelineRankStageManager(PipelineRankStageManager):
                 start_rank = (start_rank + step + self._num_devices) % self._num_devices
 
 
-class BlockType(Enum):
+class _BlockType(Enum):
     """
     An enumeration of the types of blocks in the schedule table.
     """
@@ -164,21 +167,21 @@ class BlockType(Enum):
     BACKWARD = 'b'
 
     def to_cell_type(self):
-        if self == BlockType.FORWARD:
+        if self == _BlockType.FORWARD:
             return CellType.FORWARD
-        if self == BlockType.FORWARD_DOUBLE:
+        if self == _BlockType.FORWARD_DOUBLE:
             return CellType.FORWARD
-        if self == BlockType.BACKWARD:
+        if self == _BlockType.BACKWARD:
             return CellType.BACKWARD
         raise ValueError(f"Invalid block type: {self}")
 
 
-class ChimeraBlock:
+class _ChimeraBlock:
     """
     A class representing a Chimera block in the Chimera pipeline scheduling.
     """
     def __init__(self,
-                 block_type: BlockType,
+                 block_type: _BlockType,
                  num_pipelines: int,
                  num_devices: int,
                  num_stages: int,
@@ -187,10 +190,10 @@ class ChimeraBlock:
                  micros: List[List[int]],
                  start_micro_id: int):
         """
-        Initialize the ChimeraBlock.
+        Initialize the _ChimeraBlock.
 
         Args:
-            type (BlockType): The type of the block. It can be FORWARD, FORWARD_DOUBLE, or BACKWARD.
+            type (_BlockType): The type of the block. It can be FORWARD, FORWARD_DOUBLE, or BACKWARD.
             num_pipelines (int): The number of pipelines.
             num_devices (int): The number of devices.
             num_stages (int): The number of stages.
@@ -234,7 +237,7 @@ class ChimeraBlock:
                         continue
 
                     micro_inserted = False
-                    if self._type == BlockType.BACKWARD:
+                    if self._type == _BlockType.BACKWARD:
                         first_stage_pipeline = (pipeline_id + self._num_pipelines // 2) % self._num_pipelines
                         step = -1 if pipeline_id < self._num_pipelines // 2 else 1
                     else:
@@ -246,22 +249,22 @@ class ChimeraBlock:
                     group_rank = first_stage_rank // per_stage_devices + step * stage_id
                     group_rank = (group_rank + self._num_stages) % self._num_stages
                     
-                    if self._type == BlockType.FORWARD_DOUBLE:
+                    if self._type == _BlockType.FORWARD_DOUBLE:
                         micro_index = micro_id * 2
                     else:
                         micro_index = micro_id
                     
                     cell_ref = sub_schedule[group_rank]
                     cell_ref.pipeline_id = pipeline_id
-                    if self._type == BlockType.BACKWARD:
+                    if self._type == _BlockType.BACKWARD:
                         cell_ref.stage_id = self._num_stages - 1 - stage_id
                     else:
                         cell_ref.stage_id = stage_id
                     cell_ref.type = self._type.to_cell_type()
                     cell_ref.micro_id = micros[pipeline_id][micro_index + start_micro_id]
-                    cell_ref.forward_double = self._type == BlockType.FORWARD_DOUBLE
+                    cell_ref.forward_double = self._type == _BlockType.FORWARD_DOUBLE
 
-                    if self._type == BlockType.FORWARD_DOUBLE:
+                    if self._type == _BlockType.FORWARD_DOUBLE:
                         sub_schedule_dup[group_rank] = copy.copy(sub_schedule[group_rank])
                         sub_schedule_dup[group_rank].micro_id = micros[pipeline_id][micro_index + start_micro_id + 1]
 
@@ -270,11 +273,11 @@ class ChimeraBlock:
             if micro_inserted:
                 break
             self.schedule.append(sub_schedule)
-            if self._type == BlockType.FORWARD_DOUBLE:
+            if self._type == _BlockType.FORWARD_DOUBLE:
                 self.schedule.append(sub_schedule_dup)
     
     def __str__(self):
-        result = 'ChimeraBlock(\n'
+        result = '_ChimeraBlock(\n'
         result += f'  num_pipelines = {self._num_pipelines},\n'
         result += f'  num_stages = {self._num_stages},\n'
         # the real micro_size of a block is num_stages
@@ -333,6 +336,9 @@ class ChimeraPipelineScheduleManager:
         if num_pipelines & (num_pipelines - 1) != 0:
             raise ValueError("The number of pipelines should be a power of 2")
         
+        if num_stages & (num_stages - 1) != 0:
+            raise ValueError("The number of stages should be a power of 2")
+        
         if num_pipelines > num_stages:
             raise ValueError("The number of pipelines should not be greater than the number of stages")
         
@@ -349,13 +355,13 @@ class ChimeraPipelineScheduleManager:
 
         self._construct()
 
-    def _merge_chimera_block(former_block: ChimeraBlock, latter_block: ChimeraBlock):
+    def _merge_chimera_block(former_block: _ChimeraBlock, latter_block: _ChimeraBlock):
         """
         Merge two chimera blocks.
 
         Args:
-            former_block (ChimeraBlock): The former chimera block.
-            latter_block (ChimeraBlock): The latter chimera block.
+            former_block (_ChimeraBlock): The former chimera block.
+            latter_block (_ChimeraBlock): The latter chimera block.
         
         Returns:
             List[List[ScheduleCell]]: The merged schedule.
@@ -411,22 +417,22 @@ class ChimeraPipelineScheduleManager:
         Construct the schedule.
         """
         cur_micro_id = 0
-        blocks: List[ChimeraBlock] = []
+        blocks: List[_ChimeraBlock] = []
         micro_per_pipeline = self._micro_size // self._num_pipelines
         micro_per_pipeline_block = self._num_stages // self._num_pipelines
         micros = [[i * micro_per_pipeline + j for j in range(micro_per_pipeline)] for i in range(self._num_pipelines)]
 
-        def append_block(block_type: BlockType):
-            blocks.append(ChimeraBlock(block_type, self._num_pipelines, self._num_devices, self._num_stages, self._this_rank, self._micro_size, micros, cur_micro_id))
+        def append_block(block_type: _BlockType):
+            blocks.append(_ChimeraBlock(block_type, self._num_pipelines, self._num_devices, self._num_stages, self._this_rank, self._micro_size, micros, cur_micro_id))
 
         while cur_micro_id < micro_per_pipeline:
             if cur_micro_id + 2 * micro_per_pipeline_block <= micro_per_pipeline:
-                append_block(BlockType.FORWARD_DOUBLE)
-                append_block(BlockType.BACKWARD)
+                append_block(_BlockType.FORWARD_DOUBLE)
+                append_block(_BlockType.BACKWARD)
                 cur_micro_id += 2 * micro_per_pipeline_block
             else:
-                append_block(BlockType.FORWARD)
-                append_block(BlockType.BACKWARD)
+                append_block(_BlockType.FORWARD)
+                append_block(_BlockType.BACKWARD)
                 cur_micro_id += micro_per_pipeline_block
 
         for i in range(len(blocks)-1, 0, -1):
@@ -442,7 +448,7 @@ class ChimeraPipelineScheduleManager:
             rank (int): The rank of the pipeline.
 
         Returns:
-            List[ScheduleCell]: The schedule, `schedule[time_step][rank]` is the cell in the schedule table.
+            List[ScheduleCell]: The schedule for this rank.
         """
         if rank < 0 or rank >= self._num_devices:
             raise ValueError("The rank of the pipeline should be in the range of [0, num_devices)")
@@ -457,7 +463,7 @@ class ChimeraPipelineScheduleManager:
         return sched
     
     def __str__(self):
-        result = 'ChimeraScheduleManager(\n'
+        result = 'ChimeraPipelineScheduleManager(\n'
         result += f'  num_pipelines = {self._num_pipelines},\n'
         result += f'  num_stages = {self._num_stages},\n'
         result += f'  micro_size = {self._micro_size},\n'

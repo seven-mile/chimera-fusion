@@ -1,11 +1,14 @@
 
 import pytest
 
+import sys
+
 from . import (
     ScheduleMethod,
     create_pipeline_rank_stage_manager,
     create_pipeline_schedule_manager,
     ChimeraPipelineScheduleManager,
+    IFIBPipelineScheduleManager,
 )
 
 chimera_prs_tests = [
@@ -39,3 +42,11 @@ def test_chimera_schedule(num_pipelines, num_stages, micro_size, this_rank, num_
     
     for step in mgr.schedule:
         assert len(step) == num_stages, "A schedule step should include all ranks, which equals to the number of stages"
+
+
+@pytest.mark.parametrize("num_stages, micro_size, this_rank, num_devices", [(8, 8, 0, 8)])
+def test_1f1b_schedule(num_stages, micro_size, this_rank, num_devices):
+    mgr: IFIBPipelineScheduleManager = create_pipeline_schedule_manager(ScheduleMethod.IFIB, 1, num_devices, num_stages, this_rank, micro_size)
+    assert isinstance(mgr, IFIBPipelineScheduleManager)
+    
+    print(mgr, flush=True)

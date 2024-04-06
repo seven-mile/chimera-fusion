@@ -7,7 +7,7 @@ from typing import List, Optional
 
 class ScheduleMethod(Enum):
     GPIPE = 'gpipe'
-    ONE_F_ONE_B = '1f1b'
+    IFIB = '1f1b'
     INTERLEAVED = 'interleaved'
     CHIMERA = 'chimera'
 
@@ -29,9 +29,8 @@ class ScheduleCell:
     """
     type: CellType = CellType.IDLE
     micro_id: int = -1
-    pipeline_id: int = -1
+    pipeline_id: int = 0
     stage_id: int = -1
-    time_step: int = -1
     forward_double: bool = False
 
     def is_forward(self):
@@ -145,7 +144,7 @@ class PipelineScheduleManager:
             rank (int): The rank of the pipeline.
 
         Returns:
-            List[ScheduleCell]: The schedule, `schedule[time_step][rank]` is the cell in the schedule table.
+            List[ScheduleCell]: The schedule for this rank.
 
         Raises:
             NotImplementedError: This method should be implemented by subclasses.
