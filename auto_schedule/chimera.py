@@ -255,7 +255,7 @@ class _ChimeraBlock:
                         micro_index = micro_id
                     
                     cell_ref = sub_schedule[group_rank]
-                    cell_ref.pipeline_id = pipeline_id
+                    cell_ref.prs_key = pipeline_id
                     if self._type == _BlockType.BACKWARD:
                         cell_ref.stage_id = self._num_stages - 1 - stage_id
                     else:

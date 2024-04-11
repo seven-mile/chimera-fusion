@@ -29,7 +29,7 @@ class ScheduleCell:
     """
     type: CellType = CellType.IDLE
     micro_id: int = -1
-    pipeline_id: int = 0
+    prs_key: int = 0
     stage_id: int = -1
     forward_double: bool = False
 

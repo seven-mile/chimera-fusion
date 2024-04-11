@@ -93,7 +93,7 @@ class PipelineExecutor:
             if cell.is_sync():
                 stage.sync_grad()
             elif cell.is_forward():
-                stage.call_forward(next(self.data_iters[cell.pipeline_id]))
+                stage.call_forward(next(self.data_iters[cell.prs_key]))
             else:
                 stage.call_backward()
 
