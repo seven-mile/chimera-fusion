@@ -429,7 +429,9 @@ class ChimeraPipelineScheduleManager:
             if cur_micro_id + 2 * micro_per_pipeline_block <= micro_per_pipeline:
                 append_block(_BlockType.FORWARD_DOUBLE)
                 append_block(_BlockType.BACKWARD)
-                cur_micro_id += 2 * micro_per_pipeline_block
+                cur_micro_id += micro_per_pipeline_block
+                append_block(_BlockType.BACKWARD)
+                cur_micro_id += micro_per_pipeline_block
             else:
                 append_block(_BlockType.FORWARD)
                 append_block(_BlockType.BACKWARD)
