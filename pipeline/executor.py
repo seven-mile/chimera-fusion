@@ -1,5 +1,6 @@
 
 from torch.cuda import nvtx
+from torch import distributed as dist
 
 from .context import PipelineContext
 from .stage import PipelineStage
@@ -82,6 +83,8 @@ class PipelineExecutor:
 
         self._assert_intermediate_queues_are_empty()
 
+        sync_works = []
+
         for cell in self.sched:
             if cell.is_idle():
                 continue
@@ -91,15 +94,15 @@ class PipelineExecutor:
             stage = self.stages[cell.stage_id]
             print(f'Z communication prev_rank {stage.prev_rank} next_rank {stage.next_rank}', flush=True)
             if cell.is_sync():
-                stage.sync_grad()
+                sync_works.append(stage.sync_grad())
             elif cell.is_forward():
                 stage.call_forward(next(self.data_iters[cell.prs_key]))
             else:
                 stage.call_backward()
 
-        # TODO: no need for sync_grad
-        for stage in self.stages.values():
-            stage.wait_all()
+        print('Z waiting for sync_works', flush=True)
+        for work in sync_works:
+            work.wait()
 
         self._assert_intermediate_queues_are_empty()
 

@@ -194,11 +194,13 @@ class PipelineStage:
         dist.barrier(group=self.grad_sync_group)
         grads = [p.grad for p in self.stage_module.parameters() if p.grad is not None]
         packed_tensor = parameters_to_vector(grads)
-        dist.all_reduce(packed_tensor, group=self.grad_sync_group)
+        work = dist.all_reduce(packed_tensor, group=self.grad_sync_group, async_op=True)
         packed_tensor /= self.grad_sync_group.size()
         vector_to_parameters(packed_tensor, grads)
 
         nvtx.range_pop()
+
+        return work
 
     def wait_all(self):
         nvtx.range_push('wait_all' + self.nvtx_tag)
