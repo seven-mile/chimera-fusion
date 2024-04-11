@@ -262,7 +262,6 @@ class _ChimeraBlock:
                         cell_ref.stage_id = stage_id
                     cell_ref.type = self._type.to_cell_type()
                     cell_ref.micro_id = micros[pipeline_id][micro_index + start_micro_id]
-                    cell_ref.forward_double = self._type == _BlockType.FORWARD_DOUBLE
 
                     if self._type == _BlockType.FORWARD_DOUBLE:
                         sub_schedule_dup[group_rank] = copy.copy(sub_schedule[group_rank])
@@ -440,7 +439,28 @@ class ChimeraPipelineScheduleManager:
         for i in range(len(blocks)-1, 0, -1):
             blocks[i-1].schedule = ChimeraPipelineScheduleManager._merge_chimera_block(blocks[i-1], blocks[i])
         
-        self.schedule = blocks[0].schedule
+        # transpose the schedule to normal dimensions
+        sched_trans = blocks[0].schedule
+        sched: List[List[ScheduleCell]] = []
+        for i in range(self._num_stages):
+            row = []
+            for j in range(len(sched_trans)):
+                row.append(sched_trans[j][i])
+
+            sched.append(row)
+        
+        # insert sync cells
+
+        for rank in range(len(sched)):
+            last_micros_to_sync = set(max(micros[i]) for i in range(self._num_pipelines))
+            row = sched[rank]
+            for idx in reversed(range(len(row))):
+                micro_id = row[idx].micro_id
+                if row[idx].is_backward() and micro_id in last_micros_to_sync:
+                    row.insert(idx+1, ScheduleCell(CellType.SYNC, stage_id=row[idx].stage_id))
+                    last_micros_to_sync.remove(micro_id)
+
+        self._schedule = sched
     
     def get_schedule(self, rank: int) -> List[ScheduleCell]:
         """
@@ -458,11 +478,7 @@ class ChimeraPipelineScheduleManager:
         per_pipeline_devices = self._num_devices // self._num_stages
         group_rank = rank // per_pipeline_devices
         
-        sched = []
-        for i in range(len(self.schedule)):
-            sched.append(self.schedule[i][group_rank])
-        
-        return sched
+        return self._schedule[group_rank]
     
     def __str__(self):
         result = 'ChimeraPipelineScheduleManager(\n'
@@ -470,14 +486,16 @@ class ChimeraPipelineScheduleManager:
         result += f'  num_stages = {self._num_stages},\n'
         result += f'  micro_size = {self._micro_size},\n'
         result += '  schedule = [\n'
-        for i in range(self._num_stages):
+        for row in self._schedule:
             result += '    '
-            for j in range(len(self.schedule)):
-                cell = self.schedule[j][i]
+            for cell in row:
                 if cell.is_idle():
                     result += '    '
                 else:
-                    result += '{0: >3}{1}'.format(cell.micro_id, cell.type.value)
+                    if cell.is_sync():
+                        result += '{0: >3}{1}'.format(cell.stage_id, cell.type.value)
+                    else:
+                        result += '{0: >3}{1}'.format(cell.micro_id, cell.type.value)
             result += '\n'
         result += '  ]\n'
         result += ')\n'

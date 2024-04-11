@@ -31,10 +31,12 @@ class ScheduleCell:
     micro_id: int = -1
     prs_key: int = 0
     stage_id: int = -1
-    forward_double: bool = False
 
     def is_forward(self):
         return self.type == CellType.FORWARD
+    
+    def is_backward(self):
+        return self.type == CellType.BACKWARD
 
     def is_sync(self):
         return self.type == CellType.SYNC
