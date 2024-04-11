@@ -108,5 +108,9 @@ class PipelineExecutor:
 
         nvtx.range_pop()
 
-        return stage.total_loss
+        last_stage_id = self.pctx.num_stages - 1
+        last_stage = self.stages.get(last_stage_id)
+        assert last_stage is None or last_stage.is_last_stage
+
+        return 0.0 if last_stage is None else last_stage.total_loss
 
