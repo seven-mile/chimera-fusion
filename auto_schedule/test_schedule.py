@@ -60,7 +60,6 @@ def test_chimera_schedule(num_pipelines, num_stages, micro_size, this_rank, num_
     assert len(mgr._schedule) == num_stages, "The number of stages should be equal to the length of the first dim of schedule"
     
     print(mgr, flush=True)
-    assert False
 
 
 @pytest.mark.parametrize("num_stages, micro_size, this_rank, num_devices", [(8, 8, 0, 8)])
