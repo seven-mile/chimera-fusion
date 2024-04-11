@@ -12,6 +12,7 @@ from . import (
     InterleavedPipelineScheduleManager,
 )
 
+
 chimera_prs_tests = [
     (ScheduleMethod.CHIMERA, 2, 4, 0, 8),
     (ScheduleMethod.CHIMERA, 2, 4, 1, 8),
@@ -42,13 +43,24 @@ def test_prs(method, num_prs_keys, num_stages, this_rank, num_devices):
         for i in range(num_stages):
             mgr.get_stage_to_rank_map(key)[i]
 
-@pytest.mark.parametrize("num_pipelines, num_stages, micro_size, this_rank, num_devices", [(2, 4, 4, 0, 8)])
+
+chimera_sched_tests = [
+    (2, 4, 4, 0, 8),
+    (4, 4, 4, 0, 8),
+    (2, 4, 8, 0, 8),
+    (4, 4, 8, 0, 8),
+    (2, 6, 6, 0, 12),
+]
+
+@pytest.mark.parametrize("num_pipelines, num_stages, micro_size, this_rank, num_devices", chimera_sched_tests)
 def test_chimera_schedule(num_pipelines, num_stages, micro_size, this_rank, num_devices):
     mgr: ChimeraPipelineScheduleManager = create_pipeline_schedule_manager(ScheduleMethod.CHIMERA, num_pipelines, num_devices, num_stages, this_rank, micro_size)
     assert isinstance(mgr, ChimeraPipelineScheduleManager)
     
-    for step in mgr.schedule:
-        assert len(step) == num_stages, "A schedule step should include all ranks, which equals to the number of stages"
+    assert len(mgr._schedule) == num_stages, "The number of stages should be equal to the length of the first dim of schedule"
+    
+    print(mgr, flush=True)
+    assert False
 
 
 @pytest.mark.parametrize("num_stages, micro_size, this_rank, num_devices", [(8, 8, 0, 8)])
@@ -58,6 +70,7 @@ def test_1f1b_schedule(num_stages, micro_size, this_rank, num_devices):
     
     # TODO: Add more assertions
     print(mgr, flush=True)
+
 
 @pytest.mark.parametrize("num_chunks, num_stages, micro_size, this_rank, num_devices", [(2, 8, 8, 0, 8)])
 def test_interleaved_schedule(num_chunks, num_stages, micro_size, this_rank, num_devices):
