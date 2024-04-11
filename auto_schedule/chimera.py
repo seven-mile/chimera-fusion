@@ -72,11 +72,11 @@ class ChimeraPipelineRankStageManager(PipelineRankStageManager):
         if num_pipelines & (num_pipelines - 1) != 0:
             raise ValueError("The number of pipelines should be a power of 2")
         
-        if num_stages & (num_stages - 1) != 0:
-            raise ValueError("The number of stages should be a power of 2")
-        
         if num_pipelines > num_stages:
             raise ValueError("The number of pipelines should not be greater than the number of stages")
+        
+        if num_stages % num_pipelines != 0:
+            raise ValueError("The number of stages should be a multiple of the number of pipelines")
 
         self._num_pipelines = num_pipelines
         self._num_devices = num_devices
@@ -336,11 +336,11 @@ class ChimeraPipelineScheduleManager:
         if num_pipelines & (num_pipelines - 1) != 0:
             raise ValueError("The number of pipelines should be a power of 2")
         
-        if num_stages & (num_stages - 1) != 0:
-            raise ValueError("The number of stages should be a power of 2")
-        
         if num_pipelines > num_stages:
             raise ValueError("The number of pipelines should not be greater than the number of stages")
+        
+        if num_stages % num_pipelines != 0:
+            raise ValueError("The number of stages should be a multiple of the number of pipelines")
         
         if micro_size <= 0:
             raise ValueError("The size of micro-batch should be a positive integer")
