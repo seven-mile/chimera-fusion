@@ -11,7 +11,7 @@
 module load nvidia/cuda/11.8
 conda activate pipefisher
 
-export MASTER_ADDR=$(hostname)
+export MASTER_ADDR=$(srun -N1 -n1 hostname)
 
 source scripts/config.sh
 
@@ -21,6 +21,7 @@ if [ $pipeline == 'chimera' ]; then
     export NSYS_OUTPUT=bert_prof/${model}_${chimera_pipelines}${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
 elif [ $pipeline == 'interleaved' ]; then
     export NSYS_OUTPUT=bert_prof/${model}_${interleaved_chunks}${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
+    export NSYS_NODE_INTERVAL=$((interleaved_chunks*ngpus/stages))
 else
     export NSYS_OUTPUT=bert_prof/${model}_${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
 fi
