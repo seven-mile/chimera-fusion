@@ -68,10 +68,14 @@ class PipelineContext:
             return self.world_size // (self.num_stages // self.num_chunks)
         else:
             return self.world_size // self.num_stages
-        
+    
+    @property
+    def dp_size(self):
+        return self.num_ranks_per_stage
+
     @property
     def micro_size(self):
-        return self.num_stages * self.gradient_accumulation_steps
+        return self.num_stages * self.gradient_accumulation_steps // self.dp_size
     
     @property
     def num_micro_batches_per_step(self):

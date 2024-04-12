@@ -123,8 +123,8 @@ class InterleavedPipelineScheduleManager(PipelineScheduleManager):
         if num_devices % self.num_stages_per_chunk != 0:
             raise ValueError("The number of devices should be a multiple of the number of stages per chunk")
 
-        if micro_size < self._num_stages:
-            raise ValueError("The micro size should be greater than the number of stages per chunk")
+        if micro_size < self.num_stages_per_chunk:
+            raise ValueError("The micro size should be greater than or equal to the number of stages per chunk")
         
         self._stage_mgr = InterleavedPipelineRankStageManager(num_chunks, num_devices, num_stages, rank)
 
