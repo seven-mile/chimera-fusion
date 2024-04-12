@@ -10,5 +10,5 @@ ngpus=8
 microbs=32
 acc=1
 
-chimera_pipelines=4
+chimera_pipelines=8
 interleaved_chunks=2

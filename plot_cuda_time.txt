@@ -4,5 +4,6 @@
 1f1b 8stages avg duration 1698.2271385
 2chimera 8stages avg duration 1264.3204035
 2interleaved 16stages avg duration 3173.148273
-2interleaved 8stages DP=2 avg duration 2100.157879
-avg duration 1100.003057
+2interleaved 8stages DP=2 avg duration 1244.9936925
+4chimera 8stages avg duration 1100.003057
+8chimera 8stages avg duration 1068.139204
