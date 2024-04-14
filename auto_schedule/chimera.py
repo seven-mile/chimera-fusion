@@ -4,6 +4,7 @@ from typing import List
 
 from .proto import (
     CellType,
+    GradReduceMethod,
     ScheduleCell,
     PipelineRankStageManager
 )
@@ -306,7 +307,8 @@ class ChimeraPipelineScheduleManager:
                  num_devices: int,
                  num_stages: int,
                  rank: int,
-                 micro_size: int):
+                 micro_size: int,
+                 grad_reduce_method: GradReduceMethod = GradReduceMethod.BASELINE):
         """
         Initialize the ChimeraScheduleManager.
 
@@ -322,6 +324,7 @@ class ChimeraPipelineScheduleManager:
         self._num_stages = num_stages
         self._this_rank = rank
         self._micro_size = micro_size
+        self._grad_reduce_method = grad_reduce_method
 
         if num_pipelines <= 0 or num_devices <= 0 or num_stages <= 0:
             raise ValueError("The number of pipelines, devices, and stages should be positive integers")
@@ -452,13 +455,23 @@ class ChimeraPipelineScheduleManager:
         # insert sync cells
 
         for rank in range(len(sched)):
-            last_micros_to_sync = set(max(micros[i]) for i in range(self._num_pipelines))
             row = sched[rank]
-            for idx in reversed(range(len(row))):
-                micro_id = row[idx].micro_id
-                if row[idx].is_backward() and micro_id in last_micros_to_sync:
-                    row.insert(idx+1, ScheduleCell(CellType.SYNC, stage_id=row[idx].stage_id))
-                    last_micros_to_sync.remove(micro_id)
+
+            if self._grad_reduce_method != GradReduceMethod.BASELINE:
+                last_micros_to_sync = set(max(micros[i]) for i in range(self._num_pipelines))
+                for idx in reversed(range(len(row))):
+                    micro_id = row[idx].micro_id
+                    if row[idx].is_backward() and micro_id in last_micros_to_sync:
+                        row.insert(idx+1, ScheduleCell(CellType.SYNC, stage_id=row[idx].stage_id))
+                        last_micros_to_sync.remove(micro_id)
+            else:
+                stages = set()
+                for idx in range(len(row)):
+                    if row[idx].is_backward():
+                        stages.add(row[idx].stage_id)
+                
+                for stage_id in stages:
+                    row.append(ScheduleCell(CellType.SYNC, stage_id=stage_id))
 
         self._schedule = sched
     

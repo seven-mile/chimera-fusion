@@ -70,7 +70,8 @@ parser.add_argument('--num_stages', type=int, default=4,
                     help='number of stages in configurable BERT model')
 parser.add_argument('--num_pipelines', type=int, default=2,
                     help='number of pipeline')
-parser.add_argument('--layer_allreduce', action='store_true', help='whether to allreduce layer-wise')
+parser.add_argument('--grad_reduce_method', choices=['baseline', 'stage', 'layer'],
+                    default='baseline', help='whether to allreduce layer-wise')
 # Others
 parser.add_argument('--checkpoint_dir', default=None, type=str,
                     help='path to directory to save checkpoints')
@@ -120,7 +121,7 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
         for optimizer in optimizers:
             optimizer.zero_grad()
         dist.barrier()
-        
+
         nvtx.range_push('call_pipeline')
 
         loss = executor.run(step+i)
@@ -185,7 +186,7 @@ if __name__ == "__main__":
         num_chunks=args.chunks,
         recompute=args.recompute,
         max_seq_length=args.max_seq_length,
-        is_layer_allreduce=args.layer_allreduce
+        grad_reduce_method=args.grad_reduce_method
     )
 
     print('got sched:', pctx.sched_mgr, flush=True)

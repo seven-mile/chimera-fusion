@@ -1,5 +1,6 @@
 from .proto import (
     ScheduleMethod,
+    GradReduceMethod,
     CellType,
     ScheduleCell,
     PipelineRankStageManager,
@@ -45,9 +46,10 @@ def create_pipeline_schedule_manager(
     num_stages: int,
     world_rank: int,
     micro_size: int,
+    grad_reduce_method: GradReduceMethod = GradReduceMethod.BASELINE,
 ) -> PipelineScheduleManager:
     if method == ScheduleMethod.CHIMERA:
-        return ChimeraPipelineScheduleManager(num_prs_keys, num_devices, num_stages, world_rank, micro_size)
+        return ChimeraPipelineScheduleManager(num_prs_keys, num_devices, num_stages, world_rank, micro_size, grad_reduce_method)
     elif method == ScheduleMethod.INTERLEAVED:
         return InterleavedPipelineScheduleManager(num_prs_keys, num_devices, num_stages, world_rank, micro_size)
     elif method == ScheduleMethod.IFIB:

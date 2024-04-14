@@ -1,6 +1,6 @@
 #!/bin/bash -l
-#SBATCH --nodes=8
-#SBATCH --ntasks=8
+#SBATCH --nodes=4
+#SBATCH --ntasks=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
@@ -18,7 +18,7 @@ source scripts/config.sh
 export NSYS_NODE_INTERVAL=$((ngpus/stages))
 
 if [ $pipeline == 'chimera' ]; then
-    export NSYS_OUTPUT=bert_prof/${model}_${chimera_pipelines}${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
+    export NSYS_OUTPUT=bert_prof/${model}_${chimera_pipelines}${pipeline}_${grad_reduce_method}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
 elif [ $pipeline == 'interleaved' ]; then
     export NSYS_OUTPUT=bert_prof/${model}_${interleaved_chunks}${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
     export NSYS_NODE_INTERVAL=$((interleaved_chunks*ngpus/stages))
@@ -49,4 +49,5 @@ srun --wait=0 bash scripts/nsys_wrap.sh \
             --collective_backend 'nccl' \
             --profile \
             --chunks $interleaved_chunks \
-            --num_pipelines $chimera_pipelines
+            --num_pipelines $chimera_pipelines \
+            --grad_reduce_method $grad_reduce_method

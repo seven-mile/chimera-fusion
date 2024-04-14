@@ -6,7 +6,7 @@ base_dir=bert_prof
 main_event_text=call_pipeline
 
 if [ $pipeline == 'chimera' ]; then
-    name=${model}_${chimera_pipelines}${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
+    name=${model}_${chimera_pipelines}${pipeline}_${grad_reduce_method}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
 elif [ $pipeline == 'interleaved' ]; then
     name=${model}_${interleaved_chunks}${pipeline}_${stages}stages_${ngpus}gpus_microbs${microbs}_acc${acc}
 else

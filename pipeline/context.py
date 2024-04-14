@@ -3,6 +3,7 @@ import torch.distributed
 
 from auto_schedule import (
     ScheduleMethod,
+    GradReduceMethod,
     PipelineRankStageManager,
     PipelineScheduleManager,
     create_pipeline_rank_stage_manager,
@@ -14,7 +15,7 @@ from comm import init_dist_process_group
 
 class PipelineContext:
 
-    def __init__(self, /, p2p_backend: str, collective_backend: str, pipeline_method: str, num_stages: int, micro_batch_size: int, gradient_accumulation_steps: int, num_pipelines: int, num_chunks: int, recompute: bool, max_seq_length: int, is_layer_allreduce: bool):
+    def __init__(self, /, p2p_backend: str, collective_backend: str, pipeline_method: str, num_stages: int, micro_batch_size: int, gradient_accumulation_steps: int, num_pipelines: int, num_chunks: int, recompute: bool, max_seq_length: int, grad_reduce_method: str):
         _, _, world_rank, world_size = self._init_communication(p2p_backend)
 
         self.world_size = world_size
@@ -22,6 +23,7 @@ class PipelineContext:
         self.device = torch.device('cuda', torch.cuda.current_device())
 
         self.pipeline_method = ScheduleMethod(pipeline_method)
+        self.grad_reduce_method = GradReduceMethod(grad_reduce_method)
         self.num_stages = num_stages
         self.micro_batch_size = micro_batch_size
         self.gradient_accumulation_steps = gradient_accumulation_steps
@@ -29,7 +31,6 @@ class PipelineContext:
         self.num_chunks = num_chunks
         self.recompute = recompute
         self.max_seq_length = max_seq_length
-        self.is_layer_allreduce = is_layer_allreduce
 
         self.stage_rank_mgr = self._get_prs_mgr()
         self.sched_mgr = self._get_sched_mgr()
@@ -62,6 +63,10 @@ class PipelineContext:
     @property
     def is_interleaved(self):
         return self.pipeline_method == ScheduleMethod.INTERLEAVED
+
+    @property
+    def is_layer_allreduce(self):
+        return self.grad_reduce_method == GradReduceMethod.LAYER
 
     @property
     def num_ranks_per_stage(self):
@@ -104,6 +109,7 @@ class PipelineContext:
         assert self.world_rank >= 0
         assert self.num_replicas > 0
         assert self.pipeline_method in ScheduleMethod
+        assert self.grad_reduce_method in GradReduceMethod
         assert self.num_stages > 0
         assert self.micro_batch_size > 0
         assert self.stage_rank_mgr is not None
@@ -137,4 +143,4 @@ class PipelineContext:
         return create_pipeline_rank_stage_manager(self.pipeline_method, self.num_prs_keys, self.world_size, self.num_stages, self.world_rank)
     
     def _get_sched_mgr(self) -> PipelineScheduleManager:
-        return create_pipeline_schedule_manager(self.pipeline_method, self.num_prs_keys, self.world_size, self.num_stages, self.world_rank, self.micro_size)
+        return create_pipeline_schedule_manager(self.pipeline_method, self.num_prs_keys, self.world_size, self.num_stages, self.world_rank, self.micro_size, self.grad_reduce_method)

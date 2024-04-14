@@ -12,6 +12,12 @@ class ScheduleMethod(Enum):
     CHIMERA = 'chimera'
 
 
+class GradReduceMethod(Enum):
+    BASELINE = 'baseline'
+    STAGE = 'stage'
+    LAYER = 'layer'
+
+
 class CellType(Enum):
     """
     An enumeration of the types of cells in the schedule table.
