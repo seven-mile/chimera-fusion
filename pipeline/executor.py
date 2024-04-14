@@ -69,23 +69,6 @@ class PipelineExecutor:
         for stage in self.stages.values():
             stage.assert_intermediate_queues_are_empty()
 
-    def _install_sync_hooks(self):
-        handles = []
-
-        def sync_grad_hook(module: nn.Module, _grad_input, _grad_output):
-            module.parameters()
-            
-
-        for stage in self.stages.values():
-            for layer in stage.stage_module.layers:
-                handles.append(layer.register_backward_hook())
-
-        return handles
-
-    def _uninstall_sync_hooks(self, handles):
-        for handle in handles:
-            handle.remove()
-
     def run(self, iteration: int = None):
         """
         Run the pipeline for one iteration.
