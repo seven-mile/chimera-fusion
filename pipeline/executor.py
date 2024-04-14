@@ -1,6 +1,7 @@
 
+import torch
 from torch.cuda import nvtx
-from torch import distributed as dist
+from torch import distributed as dist, nn
 
 from .context import PipelineContext
 from .stage import PipelineStage
@@ -96,8 +97,6 @@ class PipelineExecutor:
             float: Total loss of the pipeline.
         """
 
-        nvtx.range_push('call_pipeline')
-
         self._assert_intermediate_queues_are_empty()
 
         for idx, cell in enumerate(self.sched):
@@ -123,8 +122,6 @@ class PipelineExecutor:
                     stage.uninstall_sync_hooks(handles)
 
         self._assert_intermediate_queues_are_empty()
-
-        nvtx.range_pop()
 
         # wait for all gradients to be synchronized
         for stage in self.stages.values():

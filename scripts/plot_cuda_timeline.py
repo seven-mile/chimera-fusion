@@ -33,8 +33,11 @@ key_to_color_label = OrderedDict(
         'reduce_scatter_curvature': ('C9', 'sync-curvature'),
         'all_reduce_undivided_curvature': ('C9', None),
         'precondition': ('C8', 'precondition'),
+        'optimizer_step': ('C4', 'optimizer'),
     }
 )
+
+alpha_list = ['sync', 'reduce', 'gather']
 
 
 def sort(array, num_split):
@@ -90,7 +93,7 @@ def main():
                     total_time_in_first_pipeline += e - s
                 v = [(s, y-width/2), (s, y+width/2), (e, y+width/2), (e, y-width/2), (s, y-width/2)]
                 color, label = key_to_color_label[key]
-                if any(keyword in key for keyword in ['sync', 'reduce', 'gather']):
+                if any(keyword in key for keyword in alpha_list):
                     verts_alpha.append(v)
                     colors_alpha.append(color)
                 else:
@@ -124,7 +127,7 @@ def main():
     print('avg duration', np.mean(durations))
     for key, (color, label) in key_to_color_label.items():
         if key in used_keys:
-            if any(keyword in key for keyword in ['sync', 'reduce', 'gather']):
+            if any(keyword in key for keyword in alpha_list):
                 ax.bar(0, 0, label=label, color=color, alpha=0.5, hatch='//')
             else:
                 ax.bar(0, 0, label=label, color=color)

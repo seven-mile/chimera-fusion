@@ -25,7 +25,7 @@ do
         --pickle_path_timeline $pickle_path_timeline \
         --ignore_first_event \
         --main_event_indices '5,6,7' \
-        --event_keywords call_forward,call_backward,cov_kron_A,cov_kron_B,inv_kron_A,inv_kron_B,precondition,reduce,gather,sync \
+        --event_keywords call_forward,call_backward,cov_kron_A,cov_kron_B,inv_kron_A,inv_kron_B,precondition,reduce,gather,sync,optimizer \
         --main_event_text $main_event_text &
     job_ids+=($!)
 done

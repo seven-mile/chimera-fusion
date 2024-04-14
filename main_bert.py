@@ -9,6 +9,7 @@ import yaml
 import numpy as np
 import torch
 from torch import nn
+from torch.cuda import nvtx
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
@@ -119,9 +120,17 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
         for optimizer in optimizers:
             optimizer.zero_grad()
         dist.barrier()
+        
+        nvtx.range_push('call_pipeline')
+
         loss = executor.run(step+i)
+
+        nvtx.range_push('optimizer_step')
         for optimizer in optimizers:
             optimizer.step()
+        nvtx.range_pop()
+        
+        nvtx.range_pop()
 
         if (step+i) % args.log_interval == 0:
             loss = torch.tensor(loss, device=pctx.device)
