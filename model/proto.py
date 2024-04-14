@@ -15,3 +15,7 @@ class StageModule(nn.Module):
     @property
     def sizes_for_next_stage(self) -> Dict[str, Tuple]:
         raise NotImplementedError
+    
+    @property
+    def layers(self) -> List[nn.Module]:
+        raise NotImplementedError

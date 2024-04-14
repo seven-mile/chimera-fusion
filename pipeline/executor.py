@@ -68,6 +68,23 @@ class PipelineExecutor:
         for stage in self.stages.values():
             stage.assert_intermediate_queues_are_empty()
 
+    def _install_sync_hooks(self):
+        handles = []
+
+        def sync_grad_hook(module: nn.Module, _grad_input, _grad_output):
+            module.parameters()
+            
+
+        for stage in self.stages.values():
+            for layer in stage.stage_module.layers:
+                handles.append(layer.register_backward_hook())
+
+        return handles
+
+    def _uninstall_sync_hooks(self, handles):
+        for handle in handles:
+            handle.remove()
+
     def run(self, iteration: int = None):
         """
         Run the pipeline for one iteration.
@@ -83,9 +100,10 @@ class PipelineExecutor:
 
         self._assert_intermediate_queues_are_empty()
 
-        sync_works = []
-
-        for cell in self.sched:
+        for idx, cell in enumerate(self.sched):
+            peek_sync = self.pctx.is_chimera and self.pctx.is_layer_allreduce \
+                and idx != len(self.sched) - 1 and self.sched[idx+1].is_sync()
+            
             if cell.is_idle():
                 continue
 
@@ -94,19 +112,25 @@ class PipelineExecutor:
             stage = self.stages[cell.stage_id]
             print(f'Z communication prev_rank {stage.prev_rank} next_rank {stage.next_rank}', flush=True)
             if cell.is_sync():
-                sync_works.append(stage.sync_grad())
+                stage.sync_grad()
             elif cell.is_forward():
                 stage.call_forward(next(self.data_iters[cell.prs_key]))
             else:
+                if peek_sync:
+                    handles = stage.install_sync_hooks()
                 stage.call_backward()
-
-        print('Z waiting for sync_works', flush=True)
-        for work in sync_works:
-            work.wait()
+                if peek_sync:
+                    stage.uninstall_sync_hooks(handles)
 
         self._assert_intermediate_queues_are_empty()
 
         nvtx.range_pop()
+
+        # wait for all gradients to be synchronized
+        for stage in self.stages.values():
+            stage.wait_all()
+        
+        torch.cuda.synchronize()
 
         last_stage_id = self.pctx.num_stages - 1
         last_stage = self.stages.get(last_stage_id)

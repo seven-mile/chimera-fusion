@@ -14,7 +14,7 @@ from comm import init_dist_process_group
 
 class PipelineContext:
 
-    def __init__(self, /, p2p_backend: str, collective_backend: str, pipeline_method: str, num_stages: int, micro_batch_size: int, gradient_accumulation_steps: int, num_pipelines: int, num_chunks: int, recompute: bool, max_seq_length: int):
+    def __init__(self, /, p2p_backend: str, collective_backend: str, pipeline_method: str, num_stages: int, micro_batch_size: int, gradient_accumulation_steps: int, num_pipelines: int, num_chunks: int, recompute: bool, max_seq_length: int, is_layer_allreduce: bool):
         _, _, world_rank, world_size = self._init_communication(p2p_backend)
 
         self.world_size = world_size
@@ -29,6 +29,7 @@ class PipelineContext:
         self.num_chunks = num_chunks
         self.recompute = recompute
         self.max_seq_length = max_seq_length
+        self.is_layer_allreduce = is_layer_allreduce
 
         self.stage_rank_mgr = self._get_prs_mgr()
         self.sched_mgr = self._get_sched_mgr()

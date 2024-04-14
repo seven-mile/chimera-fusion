@@ -187,23 +187,66 @@ class PipelineStage:
             return self.stage_module.no_sync()
         return nullcontext()
 
-    def sync_grad(self):
-        nvtx.range_push('sync_grad' + self.nvtx_tag)
+    def _sync_grad_for_params_issue(self, param_grads: List[Tensor]):
+        nvtx.range_push('sync_grad_layer' + self.nvtx_tag)
 
         assert self.grad_sync_group is not None, 'grad_sync_group is not specified.'
-        # dist.barrier(group=self.grad_sync_group)
-        grads = [p.grad for p in self.stage_module.parameters() if p.grad is not None]
-        packed_tensor = parameters_to_vector(grads)
-        work = dist.all_reduce(packed_tensor, group=self.grad_sync_group, async_op=True)
-        packed_tensor /= self.grad_sync_group.size()
-        vector_to_parameters(packed_tensor, grads)
+
+        packed_tensor = parameters_to_vector(param_grads)
+        handle = dist.all_reduce(packed_tensor, group=self.grad_sync_group, async_op=True)
+        self.handles.append(handle)
+        self.packed_grads.append(packed_tensor)
+        self.grads.append(param_grads)
 
         nvtx.range_pop()
 
-        return work
+    def install_sync_hooks(self):
+        stage_module = self.stage_module.module if isinstance(self.stage_module, DistributedDataParallel) else self.stage_module
+
+        def get_hook(layer_id):
+
+            def sync_grad_hook(grad):
+                print(f'Z layer {layer_id} sync_grad_hook', flush=True)
+                self._sync_grad_for_params_issue([grad])
+            
+            return sync_grad_hook
+        
+        handles = []
+
+        for idx, layer in enumerate(stage_module.layers):
+            print(f'Z layer {idx} registering backward hook', flush=True)
+            hook = get_hook(idx)
+            for param in layer.parameters():
+                if param.requires_grad:
+                    handles.append(param.register_hook(hook))
+        
+        print(f'Z stage {self.stage_id} has {len(handles)} hooks', flush=True)
+        
+        return handles
+    
+    def uninstall_sync_hooks(self, handles):
+        for handle in handles:
+            handle.remove()
+
+    def sync_grad(self):
+        # ignore stage level allreduce
+        if self.pctx.is_layer_allreduce:
+            return
+
+        nvtx.range_push('sync_grad' + self.nvtx_tag)
+        
+        grads = [p.grad for p in self.stage_module.parameters() if p.grad is not None]
+
+        self._sync_grad_for_params_issue(grads)
+
+        nvtx.range_pop()
 
     def wait_all(self):
-        nvtx.range_push('wait_all' + self.nvtx_tag)
+        nvtx.range_push('sync_grad' + self.nvtx_tag)
+
+        assert self.grad_sync_group is not None, 'grad_sync_group is not specified.'
+
+        print(f'Z waiting for {len(self.handles)} handles', flush=True)
 
         for _ in range(len(self.handles)):
             self.handles.pop(0).wait()

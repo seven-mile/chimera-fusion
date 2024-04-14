@@ -85,6 +85,13 @@ class StartingStage(BertModel, StageModule):
     @property
     def sizes_for_next_stage(self):
         return {'hidden_states': (self.config.hidden_size,)}
+    
+    @property
+    def layers(self):
+        return [
+            self.embeddings,
+            *self.encoder.layer
+        ]
 
 
 class IntermediateStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
@@ -115,6 +122,10 @@ class IntermediateStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
     @property
     def sizes_for_next_stage(self):
         return {'hidden_states': (self.config.hidden_size,)}
+    
+    @property
+    def layers(self):
+        return [*self.encoder.layer]
 
 
 class EndingStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
@@ -151,6 +162,14 @@ class EndingStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
     @property
     def sizes_for_next_stage(self):
         return {}
+    
+    @property
+    def layers(self):
+        return [
+            *self.encoder.layer,
+            self.pooler,
+            self.cls
+        ]
 
 
 @dataclass
