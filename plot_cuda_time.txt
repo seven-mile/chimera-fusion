@@ -7,3 +7,12 @@
 2interleaved 8stages DP=2 avg duration 1244.9936925
 4chimera 8stages avg duration 1100.003057
 8chimera 8stages avg duration 1068.139204
+
+# For default results
+2chimera 8stages baseline avg duration 1281.2880435
+2chimera 8stages stage avg duration 1292.912583
+2chimera 8stages layer avg duration 1314.478019
+4chimera 8stages baseline avg duration 1184.140138
+4chimera 8stages stage avg duration 1094.2250425
+4chimera 8stages layer avg duration 1110.686211
+

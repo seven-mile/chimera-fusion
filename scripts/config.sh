@@ -5,12 +5,12 @@ model=bert-large
 pipeline='chimera'
 # pipeline='interleaved'
 
-stages=4
-ngpus=4
+stages=8
+ngpus=8
 microbs=32
 acc=1
 
-chimera_pipelines=2
+chimera_pipelines=4
 interleaved_chunks=2
 
 # grad_reduce_method='baseline'

@@ -59,3 +59,5 @@ python scripts/plot_cuda_timeline.py \
     --num_replicas 1 \
     >> plot_cuda_time.txt
 #imgcat $fig_path
+
+rm -f ${base_dir}/${name}_node*_timeline.pickle
