@@ -37,6 +37,8 @@ class PipelineStage:
         self.grads = []
         self.packed_grads = []
 
+        self._grad_reduce_stream = torch.cuda.Stream()
+
         self._init_comm_queues()
     
     @property
@@ -206,21 +208,18 @@ class PipelineStage:
         def get_hook(layer_id):
 
             def sync_grad_hook(grad):
-                print(f'Z layer {layer_id} sync_grad_hook', flush=True)
-                self._sync_grad_for_params_issue([grad])
+                with torch.cuda.stream(self._grad_reduce_stream):
+                    self._sync_grad_for_params_issue([grad])
             
             return sync_grad_hook
         
         handles = []
 
         for idx, layer in enumerate(stage_module.layers):
-            print(f'Z layer {idx} registering backward hook', flush=True)
             hook = get_hook(idx)
             for param in layer.parameters():
                 if param.requires_grad:
                     handles.append(param.register_hook(hook))
-        
-        print(f'Z stage {self.stage_id} has {len(handles)} hooks', flush=True)
         
         return handles
     
