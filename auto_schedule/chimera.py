@@ -239,13 +239,12 @@ class _ChimeraBlock:
 
                     micro_inserted = False
                     if self._type == _BlockType.BACKWARD:
-                        first_stage_pipeline = (pipeline_id + self._num_pipelines // 2) % self._num_pipelines
                         step = -1 if pipeline_id < self._num_pipelines // 2 else 1
+                        first_stage_rank = self._stage_mgr.get_stage_to_rank_map(pipeline_id)[-1]
                     else:
-                        first_stage_pipeline = pipeline_id
                         step = 1 if pipeline_id < self._num_pipelines // 2 else -1
+                        first_stage_rank = self._stage_mgr.get_stage_to_rank_map(pipeline_id)[0]
 
-                    first_stage_rank = self._stage_mgr.get_stage_to_rank_map(first_stage_pipeline)[0]
                     # group_rank is a virtual rank that does not consider inner parallelism
                     group_rank = first_stage_rank // per_stage_devices + step * stage_id
                     group_rank = (group_rank + self._num_stages) % self._num_stages
